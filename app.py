@@ -371,7 +371,7 @@ with left:
         # 사진 영역 높이 고정(사진이 크거나 없을 때도 레이아웃 유지)
         with st.container(height=PHOTO_H):
             if selected_photo:
-                st.image(selected_photo, use_container_width=True)
+                st.image(selected_photo, width="stretch")
             else:
                 st.info(
                     """
