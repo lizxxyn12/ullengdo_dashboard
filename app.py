@@ -120,6 +120,11 @@ st.markdown(
 .bar-label {
   font-weight: 700;
 }
+.bar-sub {
+  font-size: 0.82rem;
+  font-weight: 400;
+  color: #666;
+}
 .bar-track {
   background: #ffffff;
   border: 1px solid #edf0f5;
@@ -147,6 +152,34 @@ st.markdown(
   font-size: 0.85rem;
   text-align: right;
 }
+.sea-latest {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.sea-pill {
+  background: #e8f0ff;
+  color: #2f6bff;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-weight: 700;
+  font-size: 0.88rem;
+}
+.sea-latest-text {
+  font-size: 1.02rem;
+  font-weight: 700;
+  color: #1d1d1d;
+}
+.bar-fill-split {
+  height: 14px;
+  border-radius: 999px;
+  overflow: hidden;
+  display: flex;
+}
+.bar-seg {
+  height: 100%;
+}
 .sea-table {
   background: #ffffff;
   border: 1px solid #e8ebf2;
@@ -155,7 +188,7 @@ st.markdown(
 }
 .sea-table-row {
   display: grid;
-  grid-template-columns: 90px 1fr 1fr 1fr;
+  grid-template-columns: 90px 1fr 1fr 1fr 1fr 1fr;
   gap: 8px;
   padding: 8px 0;
   border-top: 1px solid #f0f2f6;
@@ -643,6 +676,260 @@ def _compute_season_map(monthly_df: pd.DataFrame, value_col: str):
     return season_map, threshold
 
 
+@st.cache_data(show_spinner=False)
+def load_sms_classified() -> pd.DataFrame:
+    """해상공지 분류 결과 CSV 로드."""
+    path = Path(__file__).parent / "sms_msg_classified.csv"
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_csv(path, encoding="utf-8")
+
+
+@st.cache_data(show_spinner=False)
+def load_sms_raw() -> pd.DataFrame:
+    """원본 울릉알리미 SMS CSV 로드."""
+    path = Path(__file__).parent / "울릉알리미_텍스트.csv"
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_csv(path, encoding="utf-8")
+
+
+def _summarize_sms_notice_counts(
+    df: pd.DataFrame, year: int = 2025
+) -> tuple[dict, int, dict]:
+    """해상공지 유형별 건수(연도 필터)."""
+    counts = {
+        "입항": 0,
+        "출항": 0,
+        "운항통제": 0,
+        "결항": 0,
+        "시간변경": 0,
+    }
+    breakdown = {
+        "입항": {"선박": 0, "사람": 0},
+        "출항": {"선박": 0, "사람": 0},
+    }
+    if df.empty or "sms_resDate" not in df.columns or "sms_msg" not in df.columns:
+        return counts, 0, breakdown
+
+    work = df.copy()
+    s = work["sms_resDate"].astype(str).str.strip()
+    s = s.str.replace(".", "-", regex=False).str.replace("/", "-", regex=False)
+    work["sms_resDate"] = pd.to_datetime(s, errors="coerce")
+    work = work[work["sms_resDate"].dt.year == year]
+
+    ship_keywords = [
+        "금광해운",
+        "대저해운",
+        "대저해운 도착시간",
+        "에이치해운",
+        "우성해운",
+        "주식회사태성해운",
+        "태성해운 도착시간",
+    ]
+    ship_vessel_keywords = [
+        "금광11호",
+    ]
+    people_keywords = [
+        "대저페리",
+        "썬라이즈 도착시간",
+        "씨스포빌",
+        "씨스포빌 도착시간",
+        "울릉크루즈",
+        "제이에이치페리",
+        "제이에이치페리 도착시간",
+    ]
+    people_vessel_keywords = [
+        "씨스타11호",
+        "씨스타1호",
+        "씨스타5호",
+        "뉴씨다오펄호",
+        "뉴시다오펄호",
+        "썬라이즈호",
+        "퀸스타2호",
+        "미래15호",
+        "익스프레스호",
+        "엘도라도EX호",
+        "울릉썬플라워크루즈호",
+    ]
+    passenger_keywords = ["탑승인원", "여객", "승객", "승선", "크루즈"]
+    cargo_keywords = ["화물", "차량", "선적", "택배", "물류"]
+    cancel_keywords = ["결항", "취소", "출항 취소", "운항 취소"]
+    control_keywords = ["운항 통제", "운항통제", "운항이 통제", "통제되었습니다"]
+    change_keywords = ["시간 변경", "시간변경", "시간 변경된", "시간변경된"]
+    arrive_keywords = ["입항", "입항 예정", "입항 예정시간", "입항입니다"]
+    depart_keywords = ["출항", "출발", "운항예정", "운항 예정", "정상운항", "운항합니다"]
+
+    def classify(msg: str) -> str | None:
+        if not msg:
+            return None
+        if any(k in msg for k in cancel_keywords):
+            return "결항"
+        if any(k in msg for k in control_keywords):
+            return "운항통제"
+        if any(k in msg for k in change_keywords):
+            return "시간변경"
+        if any(k in msg for k in arrive_keywords):
+            return "입항"
+        if any(k in msg for k in depart_keywords):
+            return "출항"
+        return None
+
+    def classify_group(msg: str) -> str | None:
+        if any(k in msg for k in ship_keywords) or any(
+            k in msg for k in ship_vessel_keywords
+        ) or any(k in msg for k in cargo_keywords):
+            return "선박"
+        if any(k in msg for k in people_keywords) or any(
+            k in msg for k in people_vessel_keywords
+        ) or any(k in msg for k in passenger_keywords):
+            return "사람"
+        return None
+
+    seen = set()
+    seen_group = set()
+    for _, row in work.iterrows():
+        msg = str(row.get("sms_msg", "")).strip()
+        if "셔틀" in msg:
+            continue
+        label = classify(msg)
+        if not label:
+            continue
+        day = row["sms_resDate"].date() if pd.notna(row["sms_resDate"]) else None
+        if day is None:
+            continue
+        if label in ("입항", "출항"):
+            group = classify_group(msg)
+            if group is None:
+                continue
+            key = (day, label, group)
+            if key in seen_group:
+                continue
+            seen_group.add(key)
+            breakdown[label][group] += 1
+            continue
+        key = (day, label)
+        if key in seen:
+            continue
+        seen.add(key)
+        counts[label] += 1
+
+    counts["입항"] = breakdown["입항"]["선박"] + breakdown["입항"]["사람"]
+    counts["출항"] = breakdown["출항"]["선박"] + breakdown["출항"]["사람"]
+
+    total = sum(counts.values())
+    return counts, total, breakdown
+
+
+def _latest_sea_notice(df: pd.DataFrame, year: int = 2025) -> tuple[str, str]:
+    """가장 최신 해상 공지 (카테고리, 요약 문자열)."""
+    if df.empty or "sms_resDate" not in df.columns or "sms_msg" not in df.columns:
+        return "입항", "최신 공지 없음"
+
+    work = df.copy()
+    s = work["sms_resDate"].astype(str).str.strip()
+    s = s.str.replace(".", "-", regex=False).str.replace("/", "-", regex=False)
+    work["sms_resDate"] = pd.to_datetime(s, errors="coerce")
+    work = work[work["sms_resDate"].dt.year == year]
+    work = work.dropna(subset=["sms_resDate"])
+    if work.empty:
+        return "입항", "최신 공지 없음"
+
+    ship_keywords = [
+        "금광해운",
+        "대저해운",
+        "대저해운 도착시간",
+        "에이치해운",
+        "우성해운",
+        "주식회사태성해운",
+        "태성해운 도착시간",
+    ]
+    ship_vessel_keywords = [
+        "금광11호",
+    ]
+    people_keywords = [
+        "대저페리",
+        "썬라이즈 도착시간",
+        "씨스포빌",
+        "씨스포빌 도착시간",
+        "울릉크루즈",
+        "제이에이치페리",
+        "제이에이치페리 도착시간",
+    ]
+    people_vessel_keywords = [
+        "씨스타11호",
+        "씨스타1호",
+        "씨스타5호",
+        "뉴씨다오펄호",
+        "뉴시다오펄호",
+        "썬라이즈호",
+        "퀸스타2호",
+        "미래15호",
+        "익스프레스호",
+        "엘도라도EX호",
+        "울릉썬플라워크루즈호",
+    ]
+    cancel_keywords = ["결항", "취소", "출항 취소", "운항 취소"]
+    control_keywords = ["운항 통제", "운항통제", "운항이 통제", "통제되었습니다"]
+    change_keywords = ["시간 변경", "시간변경", "시간 변경된", "시간변경된"]
+    arrive_keywords = ["입항", "입항 예정", "입항 예정시간", "입항입니다"]
+    depart_keywords = ["출항", "출발", "운항예정", "운항 예정", "정상운항", "운항합니다"]
+
+    def classify(msg: str) -> str | None:
+        if not msg:
+            return None
+        if any(k in msg for k in cancel_keywords):
+            return "결항"
+        if any(k in msg for k in control_keywords):
+            return "운항통제"
+        if any(k in msg for k in change_keywords):
+            return "시간변경"
+        if any(k in msg for k in arrive_keywords):
+            return "입항"
+        if any(k in msg for k in depart_keywords):
+            return "출항"
+        return None
+
+    candidates = []
+    for _, row in work.iterrows():
+        msg = str(row.get("sms_msg", "")).strip()
+        if not msg or "셔틀" in msg:
+            continue
+        label = classify(msg)
+        if not label:
+            continue
+        candidates.append((row["sms_resDate"], msg, label))
+
+    if not candidates:
+        return "입항", "최신 공지 없음"
+
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    dt, msg, label = candidates[0]
+
+    names = (
+        ship_keywords
+        + ship_vessel_keywords
+        + people_keywords
+        + people_vessel_keywords
+    )
+    names = sorted(names, key=len, reverse=True)
+    name = next((n for n in names if n in msg), "공지")
+
+    time_match = re.search(r"(\\d{1,2})[:시](\\d{2})", msg)
+    if time_match:
+        time_text = f"{int(time_match.group(1)):02d}:{time_match.group(2)}"
+    else:
+        time_text = dt.strftime("%H:%M") if dt else ""
+
+    day_text = f"{dt.day}일" if dt else ""
+    parts = [name]
+    if day_text:
+        parts.append(f"({day_text})")
+    if time_text and time_text != "00:00":
+        parts.append(time_text)
+    return label, " ".join(parts).strip()
+
+
 
 
 # -----------------------------
@@ -915,6 +1202,37 @@ with right:
 # =============================
 # Row 2: Layer 2개 (해상공지 / 도로통제)
 # =============================
+sms_counts, sms_total, sms_breakdown = _summarize_sms_notice_counts(
+    load_sms_raw(),
+    year=2025,
+)
+sea_latest_label, sea_latest_text = _latest_sea_notice(load_sms_raw(), year=2025)
+
+def _pct(count: int, total: int) -> int:
+    if total <= 0:
+        return 0
+    return int(round(count / total * 100))
+
+sea_arrive = sms_counts["입항"]
+sea_depart = sms_counts["출항"]
+sea_control = sms_counts["운항통제"]
+sea_cancel = sms_counts["결항"]
+sea_change = sms_counts["시간변경"]
+sea_total = sms_total
+sea_arrive_pct = _pct(sea_arrive, sea_total)
+sea_depart_pct = _pct(sea_depart, sea_total)
+sea_control_pct = _pct(sea_control, sea_total)
+sea_cancel_pct = _pct(sea_cancel, sea_total)
+sea_change_pct = _pct(sea_change, sea_total)
+sea_arrive_ship = sms_breakdown["입항"]["선박"]
+sea_arrive_people = sms_breakdown["입항"]["사람"]
+sea_depart_ship = sms_breakdown["출항"]["선박"]
+sea_depart_people = sms_breakdown["출항"]["사람"]
+sea_arrive_ship_pct = _pct(sea_arrive_ship, sea_arrive)
+sea_arrive_people_pct = 100 - sea_arrive_ship_pct if sea_arrive > 0 else 0
+sea_depart_ship_pct = _pct(sea_depart_ship, sea_depart)
+sea_depart_people_pct = 100 - sea_depart_ship_pct if sea_depart > 0 else 0
+
 st.write("")
 c1, c2 = st.columns(2, gap="large")
 ROW2_CARD_H = 350
@@ -923,49 +1241,57 @@ with c1:
     with st.container(border=True, height=ROW2_CARD_H):
         if show_sea_notice:
             st.markdown(
-                """
+                f"""
 <div class="r2-card">
   <div class="r2-head">
     <div class="r2-title">해상 공지</div>
-    <div class="r2-date">12월 26일 기준</div>
+    <div class="r2-date">2025년 기준</div>
+  </div>
+  <div class="sea-latest">
+    <div class="sea-pill">{sea_latest_label}</div>
+    <div class="sea-latest-text">{sea_latest_text}</div>
   </div>
   <div class="sea-bars">
     <div class="bar-row">
-      <div class="bar-label">전체 문의</div>
+      <div class="bar-label">입항 <span class="bar-sub">(선박/사람)</span></div>
       <div class="bar-track">
-        <div class="bar-fill" style="width:100%; background:#2f6bff;">
-          <span class="bar-pill">전체</span>
+        <div class="bar-fill-split" style="width:{sea_arrive_pct}%;">
+          <div class="bar-seg" style="width:{sea_arrive_ship_pct}%; background:#ff8a3d;"></div>
+          <div class="bar-seg" style="width:{sea_arrive_people_pct}%; background:#ffd3a8;"></div>
         </div>
       </div>
-      <div class="bar-value">1,284명</div>
+      <div class="bar-value">{sea_arrive:,}</div>
     </div>
     <div class="bar-row">
-      <div class="bar-label">운항 문의</div>
+      <div class="bar-label">출항 <span class="bar-sub">(선박/사람)</span></div>
       <div class="bar-track">
-        <div class="bar-fill" style="width:62%; background:#5b2bff;"></div>
+        <div class="bar-fill-split" style="width:{sea_depart_pct}%;">
+          <div class="bar-seg" style="width:{sea_depart_ship_pct}%; background:#00b3a4;"></div>
+          <div class="bar-seg" style="width:{sea_depart_people_pct}%; background:#8fe3da;"></div>
+        </div>
       </div>
-      <div class="bar-value">781명</div>
+      <div class="bar-value">{sea_depart:,}</div>
     </div>
     <div class="bar-row">
-      <div class="bar-label">날씨 문의</div>
+      <div class="bar-label">운항통제</div>
       <div class="bar-track">
-        <div class="bar-fill" style="width:38%; background:#00b3a4;"></div>
+        <div class="bar-fill" style="width:{sea_control_pct}%; background:#5b2bff;"></div>
       </div>
-      <div class="bar-value">503명</div>
+      <div class="bar-value">{sea_control:,}</div>
     </div>
-  </div>
-  <div class="sea-table">
-    <div class="sea-table-row sea-table-head">
-      <div>구분</div>
-      <div>전체 문의</div>
-      <div>운항 문의</div>
-      <div>날씨 문의</div>
+    <div class="bar-row">
+      <div class="bar-label">결항</div>
+      <div class="bar-track">
+        <div class="bar-fill" style="width:{sea_cancel_pct}%; background:#e24a4a;"></div>
+      </div>
+      <div class="bar-value">{sea_cancel:,}</div>
     </div>
-    <div class="sea-table-row">
-      <div>건수</div>
-      <div>1,284</div>
-      <div>781</div>
-      <div>503</div>
+    <div class="bar-row">
+      <div class="bar-label">시간변경</div>
+      <div class="bar-track">
+        <div class="bar-fill" style="width:{sea_change_pct}%; background:#7b61ff;"></div>
+      </div>
+      <div class="bar-value">{sea_change:,}</div>
     </div>
   </div>
 </div>
@@ -983,8 +1309,8 @@ with c2:
                 st.markdown(
                     """
 <div class="r2-top">
-  <div class="r2-title">도로 통지 공지</div>
-  <div class="r2-date">12월 26일 기준</div>
+  <div class="r2-title">도로 통제 공지</div>
+  <div class="r2-date">최신 기준</div>
 </div>
                     """,
                     unsafe_allow_html=True,
@@ -1003,16 +1329,16 @@ with c2:
 <div class="r2-card r2-card-body">
   <div class="road-list">
     <div class="road-item">
-      <div class="road-item-title"><span class="road-tag">통제</span>일주도로 남양 구간</div>
-      <div class="road-item-meta">08:30 ~ 11:30 · 낙석 정비</div>
+      <div class="road-item-title"><span class="road-tag">주차장 정비</span>사동항 주차장 전면 통제</div>
+      <div class="road-item-meta">차량을 다른 곳으로 이동 주차 바랍니다.</div>
     </div>
     <div class="road-item">
-      <div class="road-item-title"><span class="road-tag">부분통제</span>천부 해안도로</div>
-      <div class="road-item-meta">12:00 ~ 16:00 · 차선 축소</div>
+      <div class="road-item-title"><span class="road-tag">도로공사</span>나리 도로구간 공사</div>
+      <div class="road-item-meta">도로열선 관련 공사 중 · 통행 주의</div>
     </div>
     <div class="road-item">
-      <div class="road-item-title"><span class="road-tag">예정</span>사동터널 점검</div>
-      <div class="road-item-meta">익일 09:00 ~ 12:00 · 우회 권장</div>
+      <div class="road-item-title"><span class="road-tag">이동요청</span>도동약수공원 주차장 도색작업</div>
+      <div class="road-item-meta">11.11.(화)~11.14.(금) 차량 이동 요청</div>
     </div>
   </div>
 </div>
@@ -1092,7 +1418,7 @@ if show_graphs:
                             f"{year}년 월별 교통단속 건수",
                             fig_size=(GRAPH_FIG_W, GRAPH_FIG_H),
                         )
-                        st.pyplot(fig, use_container_width=True)
+                        st.pyplot(fig, width="stretch")
                     else:
                         month = st.selectbox(
                             "월 선택",
@@ -1114,7 +1440,7 @@ if show_graphs:
                             f"{month}월 연도별 교통단속 건수",
                             fig_size=(GRAPH_FIG_W, GRAPH_FIG_H),
                         )
-                        st.pyplot(fig, use_container_width=True)
+                        st.pyplot(fig, width="stretch")
             st.write("")
             st.markdown(
                 '<div class="card-sub">설명 영역</div>', unsafe_allow_html=True
@@ -1168,7 +1494,7 @@ if show_graphs:
                             f"{year}년 월별 강수량/여객수",
                             fig_size=(GRAPH_FIG_W_G2, GRAPH_FIG_H_G2),
                         )
-                        st.pyplot(fig, use_container_width=True)
+                        st.pyplot(fig, width="stretch")
                     else:
                         month = st.selectbox(
                             "월 선택",
@@ -1190,7 +1516,7 @@ if show_graphs:
                             f"{month}월 연도별 강수량/여객수",
                             fig_size=(GRAPH_FIG_W_G2, GRAPH_FIG_H_G2),
                         )
-                        st.pyplot(fig, use_container_width=True)
+                        st.pyplot(fig, width="stretch")
             st.write("")
             st.markdown(
                 '<div class="card-sub">설명 영역</div>', unsafe_allow_html=True
@@ -1259,7 +1585,7 @@ if show_graphs:
                 if threshold is not None:
                     ax.legend(loc="upper right")
                 fig.tight_layout()
-                st.pyplot(fig, use_container_width=True)
+                st.pyplot(fig, width="stretch")
             st.write("")
             st.markdown(
                 '<div class="card-sub">설명 영역</div>', unsafe_allow_html=True
