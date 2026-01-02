@@ -29,11 +29,11 @@ st.set_page_config(
 
 # Matplotlib 한글 폰트 설정 (환경별 자동 선택)
 _font_candidates = [
-    "AppleGothic",      # macOS
-    "NanumGothic",      # Linux/Windows (설치 시)
-    "Malgun Gothic",    # Windows
-    "Noto Sans CJK KR", # Linux
-    "Noto Sans KR",     # Linux
+    "AppleGothic",  # macOS
+    "NanumGothic",  # Linux/Windows (설치 시)
+    "Malgun Gothic",  # Windows
+    "Noto Sans CJK KR",  # Linux
+    "Noto Sans KR",  # Linux
 ]
 _available_fonts = {f.name for f in fm.fontManager.ttflist}
 for _fname in _font_candidates:
@@ -277,6 +277,90 @@ def load_accidents_csv() -> pd.DataFrame:
     return df
 
 
+def load_rockfall_points() -> tuple[list[tuple[float, float, str]], list[str]]:
+    """rockfall 폴더 사진명(주소) 기반으로 좌표 매칭."""
+    rock_dir = Path(__file__).parent / "rockfall"
+    if not rock_dir.exists():
+        return [], []
+
+    coords_path = Path(__file__).parent / "rockfall_coords.csv"
+    if coords_path.exists():
+        df_coords = pd.read_csv(coords_path, encoding="utf-8")
+        needed = {"filename", "latitude", "longitude"}
+        if needed.issubset(df_coords.columns):
+            points = []
+            meta = []
+            for _, row in df_coords.iterrows():
+                lat = pd.to_numeric(row.get("latitude", None), errors="coerce")
+                lon = pd.to_numeric(row.get("longitude", None), errors="coerce")
+                if pd.isna(lat) or pd.isna(lon):
+                    continue
+                name = row.get("filename", "")
+                if not name:
+                    continue
+                address = row.get("address", "") or Path(str(name)).stem
+                photo_path = rock_dir / str(name)
+                points.append((float(lat), float(lon), f"낙석: {address}"))
+                meta.append(
+                    {
+                        "lat": float(lat),
+                        "lon": float(lon),
+                        "photo": str(photo_path) if photo_path.exists() else None,
+                        "name": str(address),
+                    }
+                )
+            if points:
+                return points, meta
+
+    df = load_accidents_csv()
+    if df.empty:
+        return [], []
+
+    addr_cols = [
+        c for c in ["clean_normalized", "raw", "detail", "주소"] if c in df.columns
+    ]
+    if not addr_cols:
+        return [], []
+
+    norm_lookup = {}
+    for _, row in df.iterrows():
+        lat = row.get("latitude", None)
+        lon = row.get("longitude", None)
+        if pd.isna(lat) or pd.isna(lon):
+            continue
+        for col in addr_cols:
+            val = row.get(col, None)
+            if val is None:
+                continue
+            key = _norm_text(val)
+            if key and key not in norm_lookup:
+                norm_lookup[key] = (float(lat), float(lon))
+
+    exts = {".jpg", ".jpeg", ".png", ".webp", ".JPG", ".JPEG", ".PNG", ".WEBP"}
+    points = []
+    meta = []
+    for p in rock_dir.iterdir():
+        if not p.is_file() or p.suffix not in exts:
+            continue
+        name = p.stem
+        key = _norm_text(name)
+        loc = norm_lookup.get(key)
+        if loc is None:
+            continue
+        lat, lon = loc
+        points.append((lat, lon, f"낙석: {name}"))
+        meta.append(
+            {
+                "lat": float(lat),
+                "lon": float(lon),
+                "photo": str(p),
+                "name": str(name),
+            }
+        )
+
+    return points, meta
+
+
 def render_ulleung_folium_map(kind: str = "base", height: int = 420):
     """울릉군 Folium 지도 렌더.
 
@@ -356,10 +440,13 @@ def render_ulleung_folium_map(kind: str = "base", height: int = 420):
 
         color = "red"
     elif kind == "rockfall":
-        sample_points = [
-            (37.4950, 130.9145, "낙석(샘플) A"),
-            (37.4680, 130.8920, "낙석(샘플) B"),
-        ]
+        sample_points, rockfall_meta = load_rockfall_points()
+        st.session_state["rockfall_points_meta"] = rockfall_meta
+        if not sample_points:
+            sample_points = [
+                (37.4950, 130.9145, "낙석(샘플) A"),
+                (37.4680, 130.8920, "낙석(샘플) B"),
+            ]
         color = "orange"
     elif kind == "bus":
         sample_points = [
@@ -758,7 +845,14 @@ def _summarize_sms_notice_counts(
     control_keywords = ["운항 통제", "운항통제", "운항이 통제", "통제되었습니다"]
     change_keywords = ["시간 변경", "시간변경", "시간 변경된", "시간변경된"]
     arrive_keywords = ["입항", "입항 예정", "입항 예정시간", "입항입니다"]
-    depart_keywords = ["출항", "출발", "운항예정", "운항 예정", "정상운항", "운항합니다"]
+    depart_keywords = [
+        "출항",
+        "출발",
+        "운항예정",
+        "운항 예정",
+        "정상운항",
+        "운항합니다",
+    ]
 
     def classify(msg: str) -> str | None:
         if not msg:
@@ -776,13 +870,17 @@ def _summarize_sms_notice_counts(
         return None
 
     def classify_group(msg: str) -> str | None:
-        if any(k in msg for k in ship_keywords) or any(
-            k in msg for k in ship_vessel_keywords
-        ) or any(k in msg for k in cargo_keywords):
+        if (
+            any(k in msg for k in ship_keywords)
+            or any(k in msg for k in ship_vessel_keywords)
+            or any(k in msg for k in cargo_keywords)
+        ):
             return "선박"
-        if any(k in msg for k in people_keywords) or any(
-            k in msg for k in people_vessel_keywords
-        ) or any(k in msg for k in passenger_keywords):
+        if (
+            any(k in msg for k in people_keywords)
+            or any(k in msg for k in people_vessel_keywords)
+            or any(k in msg for k in passenger_keywords)
+        ):
             return "사람"
         return None
 
@@ -873,7 +971,14 @@ def _latest_sea_notice(df: pd.DataFrame, year: int = 2025) -> tuple[str, str]:
     control_keywords = ["운항 통제", "운항통제", "운항이 통제", "통제되었습니다"]
     change_keywords = ["시간 변경", "시간변경", "시간 변경된", "시간변경된"]
     arrive_keywords = ["입항", "입항 예정", "입항 예정시간", "입항입니다"]
-    depart_keywords = ["출항", "출발", "운항예정", "운항 예정", "정상운항", "운항합니다"]
+    depart_keywords = [
+        "출항",
+        "출발",
+        "운항예정",
+        "운항 예정",
+        "정상운항",
+        "운항합니다",
+    ]
 
     def classify(msg: str) -> str | None:
         if not msg:
@@ -907,10 +1012,7 @@ def _latest_sea_notice(df: pd.DataFrame, year: int = 2025) -> tuple[str, str]:
     dt, msg, label = candidates[0]
 
     names = (
-        ship_keywords
-        + ship_vessel_keywords
-        + people_keywords
-        + people_vessel_keywords
+        ship_keywords + ship_vessel_keywords + people_keywords + people_vessel_keywords
     )
     names = sorted(names, key=len, reverse=True)
     name = next((n for n in names if n in msg), "공지")
@@ -928,8 +1030,6 @@ def _latest_sea_notice(df: pd.DataFrame, year: int = 2025) -> tuple[str, str]:
     if time_text and time_text != "00:00":
         parts.append(time_text)
     return label, " ".join(parts).strip()
-
-
 
 
 # -----------------------------
@@ -950,6 +1050,10 @@ if "selected_acc_meta" not in st.session_state:
     st.session_state["selected_acc_meta"] = None
 if "selected_acc_photo_path" not in st.session_state:
     st.session_state["selected_acc_photo_path"] = None
+if "selected_rockfall_meta" not in st.session_state:
+    st.session_state["selected_rockfall_meta"] = None
+if "selected_rockfall_photo_path" not in st.session_state:
+    st.session_state["selected_rockfall_photo_path"] = None
 
 # -----------------------------
 # Helper functions for accident photo lookup
@@ -1042,7 +1146,7 @@ _notice_idx = int(_notice_count) % len(NOTICES)
 _notice_text = NOTICES[_notice_idx]
 _prefix = "전체 공지 :"
 if isinstance(_notice_text, str) and _notice_text.startswith(_prefix):
-    _rest = _notice_text[len(_prefix):].lstrip()
+    _rest = _notice_text[len(_prefix) :].lstrip()
     _notice_html = f"<span style='font-weight:800;'>{_prefix}</span> {_rest}"
 else:
     _notice_html = _notice_text
@@ -1058,9 +1162,9 @@ st.write("")  # 약간의 여백
 # =============================
 
 # 상단 2개 카드(좌/우) 영역 높이 고정
-TOP_CARD_H = 600   # 전체 카드 높이(px)
-PHOTO_H = 280     # 사진 영역 높이(px)
-MAP_H = 360        # 지도 영역 높이(px)
+TOP_CARD_H = 600  # 전체 카드 높이(px)
+PHOTO_H = 280  # 사진 영역 높이(px)
+MAP_H = 360  # 지도 영역 높이(px)
 
 left, right = st.columns([1, 2.2], gap="large")
 
@@ -1070,13 +1174,17 @@ with left:
             '<div class="card-title">사고 장소 사진</div>', unsafe_allow_html=True
         )
 
-        selected_photo = st.session_state.get("selected_acc_photo_path")
-        selected_meta = st.session_state.get("selected_acc_meta")
+        selected_rockfall_photo = st.session_state.get("selected_rockfall_photo_path")
+        selected_rockfall_meta = st.session_state.get("selected_rockfall_meta")
+        selected_acc_photo = st.session_state.get("selected_acc_photo_path")
+        selected_acc_meta = st.session_state.get("selected_acc_meta")
 
         # 사진 영역 높이 고정(사진이 크거나 없을 때도 레이아웃 유지)
         with st.container(height=PHOTO_H):
-            if selected_photo:
-                st.image(selected_photo, width="stretch")
+            if selected_rockfall_photo:
+                st.image(selected_rockfall_photo, width="stretch")
+            elif selected_acc_photo:
+                st.image(selected_acc_photo, width="stretch")
             else:
                 st.info(
                     """
@@ -1091,8 +1199,10 @@ with left:
         st.markdown('<div class="card-title">자세히 보기</div>', unsafe_allow_html=True)
 
         # 선택된 사고 정보는 여기(설명 텍스트)에 표시
-        if selected_meta:
-            st.write(selected_meta)
+        if selected_rockfall_meta:
+            st.write(selected_rockfall_meta)
+        elif selected_acc_meta:
+            st.write(selected_acc_meta)
         else:
             st.markdown(
                 """
@@ -1104,9 +1214,7 @@ with left:
 
 with right:
     with st.container(border=True, height=TOP_CARD_H):
-        st.markdown(
-            '<div class="card-title">울릉군 지도</div>', unsafe_allow_html=True
-        )
+        st.markdown('<div class="card-title">울릉군 지도</div>', unsafe_allow_html=True)
         st.caption("2025년 울릉군 위치 데이터 기반")
 
         # 지도 상단 탭(맵 카드 안에서만 탭)
@@ -1189,14 +1297,45 @@ with right:
 
         with t2:
             st.caption("울릉군 낙석 발생 지점")
-            render_ulleung_folium_map(kind="rockfall", height=MAP_H)
+            rock_map_state = render_ulleung_folium_map(kind="rockfall", height=MAP_H)
+            if isinstance(rock_map_state, dict):
+                last = rock_map_state.get("last_object_clicked")
+                rock_meta = st.session_state.get("rockfall_points_meta", [])
+                if (
+                    isinstance(last, dict)
+                    and "lat" in last
+                    and "lng" in last
+                    and rock_meta
+                ):
+                    lat0 = float(last["lat"])
+                    lon0 = float(last["lng"])
+                    best = None
+                    best_d = None
+                    for p in rock_meta:
+                        d = abs(float(p["lat"]) - lat0) + abs(float(p["lon"]) - lon0)
+                        if best_d is None or d < best_d:
+                            best_d = d
+                            best = p
+                    if best is not None and best_d is not None and best_d < 1e-5:
+                        name = best.get("name", "")
+                        photo = best.get("photo", None)
+                        if name:
+                            st.session_state["selected_rockfall_meta"] = (
+                                f"낙석 위치 : {name}"
+                            )
+                        else:
+                            st.session_state["selected_rockfall_meta"] = (
+                                "낙석 위치 : (없음)"
+                            )
+                        st.session_state["selected_rockfall_photo_path"] = (
+                            str(photo) if photo else None
+                        )
 
         with t3:
             st.caption("울릉군 버스 실시간 상황(샘플)")
             render_ulleung_folium_map(kind="bus", height=MAP_H)
 
         st.caption("※ 확대해서 확인해보세요")
-
 
 
 # =============================
@@ -1208,10 +1347,12 @@ sms_counts, sms_total, sms_breakdown = _summarize_sms_notice_counts(
 )
 sea_latest_label, sea_latest_text = _latest_sea_notice(load_sms_raw(), year=2025)
 
+
 def _pct(count: int, total: int) -> int:
     if total <= 0:
         return 0
     return int(round(count / total * 100))
+
 
 sea_arrive = sms_counts["입항"]
 sea_depart = sms_counts["출항"]
@@ -1353,7 +1494,6 @@ with c2:
 # =============================
 if show_graphs:
 
-    
     st.write("")
     g1, g2, g3 = st.columns(3, gap="large")
     GRAPH_CARD_H = 600
@@ -1362,6 +1502,7 @@ if show_graphs:
     GRAPH_FIG_H = 3.2
     GRAPH_FIG_W_G2 = 7.0
     GRAPH_FIG_H_G2 = 4.2
+
     def graph_card(col, title):
         with col:
             with st.container(border=True, height=GRAPH_CARD_H):
@@ -1374,7 +1515,6 @@ if show_graphs:
                     '<div class="card-sub">설명 영역</div>', unsafe_allow_html=True
                 )
                 st.write("그래프 해석/요약/주의사항 등 들어갈 자리")
-
 
     with g1:
         with st.container(border=True, height=GRAPH_CARD_H):
@@ -1442,9 +1582,7 @@ if show_graphs:
                         )
                         st.pyplot(fig, width="stretch")
             st.write("")
-            st.markdown(
-                '<div class="card-sub">설명 영역</div>', unsafe_allow_html=True
-            )
+            st.markdown('<div class="card-sub">설명 영역</div>', unsafe_allow_html=True)
             st.write(
                 "- 연도별 선택 시: 해당 연도의 월별 단속 건수가 막대로 표시됩니다.\n"
                 "- 월별 선택 시: 선택한 월의 연도별 단속 건수 비교가 가능합니다.\n"
@@ -1452,7 +1590,6 @@ if show_graphs:
                 "- 기준선이 없으므로, 변화 추이는 막대 간 상대 비교로 해석합니다."
             )
 
-    
     with g2:
         with st.container(border=True, height=GRAPH_CARD_H):
             st.markdown(
@@ -1518,9 +1655,7 @@ if show_graphs:
                         )
                         st.pyplot(fig, width="stretch")
             st.write("")
-            st.markdown(
-                '<div class="card-sub">설명 영역</div>', unsafe_allow_html=True
-            )
+            st.markdown('<div class="card-sub">설명 영역</div>', unsafe_allow_html=True)
             st.write(
                 "- 막대는 강수량 합, 선은 입도/출도 여객수 추이를 함께 보여줍니다.\n"
                 "- 연도별 선택 시: 한 해의 월별 패턴을 한 화면에서 비교합니다.\n"
@@ -1587,9 +1722,7 @@ if show_graphs:
                 fig.tight_layout()
                 st.pyplot(fig, width="stretch")
             st.write("")
-            st.markdown(
-                '<div class="card-sub">설명 영역</div>', unsafe_allow_html=True
-            )
+            st.markdown('<div class="card-sub">설명 영역</div>', unsafe_allow_html=True)
             st.write(
                 "- 월별 막대 색으로 성수기/비수기를 구분해 시각화합니다.\n"
                 "- 기준선은 전체 평균이며, 평균을 넘는 달이 성수기로 표시됩니다.\n"
