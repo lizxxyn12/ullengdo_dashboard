@@ -1182,9 +1182,15 @@ with left:
         # 사진 영역 높이 고정(사진이 크거나 없을 때도 레이아웃 유지)
         with st.container(height=PHOTO_H):
             if selected_rockfall_photo:
-                st.image(selected_rockfall_photo, width="stretch")
+                try:
+                    st.image(selected_rockfall_photo, width="stretch")
+                except Exception:
+                    st.warning("이미지를 불러오지 못했어.")
             elif selected_acc_photo:
-                st.image(selected_acc_photo, width="stretch")
+                try:
+                    st.image(selected_acc_photo, width="stretch")
+                except Exception:
+                    st.warning("이미지를 불러오지 못했어.")
             else:
                 st.info(
                     """
