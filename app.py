@@ -3,6 +3,7 @@ import pandas as pd
 from pathlib import Path
 import re
 import time
+import math
 import unicodedata
 import matplotlib.pyplot as plt
 from matplotlib import font_manager as fm
@@ -341,7 +342,7 @@ def load_rockfall_points() -> tuple[list[tuple[float, float, str]], list[str]]:
             if photo is None and "filename" in row:
                 photo = _find_rockfall_photo(row.get("filename", ""))
 
-            points.append((float(lat), float(lon), f"낙석: {label_text}"))
+            points.append((float(lat), float(lon), f"낙석 발생 위치 : {label_text}"))
             meta.append(
                 {
                     "lat": float(lat),
@@ -358,6 +359,242 @@ def load_rockfall_points() -> tuple[list[tuple[float, float, str]], list[str]]:
         points, meta = _build_from_coords_df(_read_csv_safely(coords_final_path))
         if points:
             return points, meta
+
+
+@st.cache_data(show_spinner=False)
+def load_bus_stops_csv() -> pd.DataFrame:
+    """버스 정류장 CSV 로드."""
+    csv_path = Path(__file__).parent / "ullengdo_bus_stops.csv"
+    if not csv_path.exists():
+        return pd.DataFrame()
+
+    try:
+        df = pd.read_csv(csv_path, encoding="utf-8")
+    except Exception:
+        df = pd.read_csv(csv_path, encoding="utf-8-sig")
+
+    df.columns = [str(c).strip() for c in df.columns]
+
+    lat_col = next((c for c in ["위도", "latitude", "Latitude"] if c in df.columns), None)
+    lon_col = next((c for c in ["경도", "longitude", "Longitude"] if c in df.columns), None)
+    name_col = next((c for c in ["정류장명", "name", "정류장"] if c in df.columns), None)
+    if not (lat_col and lon_col and name_col):
+        return pd.DataFrame()
+
+    df["lat"] = pd.to_numeric(df[lat_col], errors="coerce")
+    df["lon"] = pd.to_numeric(df[lon_col], errors="coerce")
+    df["stop_name"] = df[name_col].astype(str)
+    df["stop_norm"] = df["stop_name"].apply(_norm_text)
+    df = df.dropna(subset=["lat", "lon"]).copy()
+    return df[["stop_name", "stop_norm", "lat", "lon"]]
+
+
+def _match_bus_stop(df: pd.DataFrame, name: str):
+    """정류장 이름으로 좌표 매칭."""
+    if df.empty:
+        return None
+    target = _norm_text(name)
+    if not target:
+        return None
+
+    exact = df[df["stop_norm"] == target]
+    if not exact.empty:
+        row = exact.iloc[0]
+        return float(row["lat"]), float(row["lon"])
+
+    for _, row in df.iterrows():
+        norm = row["stop_norm"]
+        if target in norm or norm in target:
+            return float(row["lat"]), float(row["lon"])
+    return None
+
+
+def _bus_route_defs():
+    """PDF에서 읽은 노선 요약(수동 정의)."""
+    return [
+        {
+            "id": "1",
+            "name": "1노선 (도동→사동 방면 섬일주)",
+            "color": "#d94f5c",
+            "stops": [
+                "울릉군도동정류소",
+                "사동항",
+                "남양",
+                "태하삼거리",
+                "현포",
+                "천부정류장",
+                "관음도",
+                "저동여객선터미널",
+                "울릉군도동정류소",
+            ],
+        },
+        {
+            "id": "2",
+            "name": "2노선 (도동→저동 방면 섬일주)",
+            "color": "#4f8bd9",
+            "stops": [
+                "울릉군도동정류소",
+                "저동여객선터미널",
+                "관음도",
+                "천부정류장",
+                "현포",
+                "태하삼거리",
+                "남양",
+                "사동항",
+                "울릉군도동정류소",
+            ],
+        },
+        {
+            "id": "3",
+            "name": "3노선 (도동↔저동↔봉래폭포)",
+            "color": "#8b5cd9",
+            "stops": [
+                "울릉군도동정류소",
+                "저동",
+                "봉래폭포",
+                "저동",
+                "울릉군도동정류소",
+            ],
+        },
+        {
+            "id": "4",
+            "name": "4노선 (천부↔나리분지)",
+            "color": "#22a979",
+            "stops": [
+                "천부정류장",
+                "나리",
+                "천부정류장",
+            ],
+        },
+        {
+            "id": "5",
+            "name": "5노선 (사동항↔도동↔저동↔관음도↔석포)",
+            "color": "#d9a54f",
+            "stops": [
+                "사동항",
+                "울릉군도동정류소",
+                "저동여객선터미널",
+                "관음도",
+                "석포전망대입구",
+            ],
+        },
+        {
+            "id": "11",
+            "name": "11노선 (천부→관음도→저동약국→도동→사동항→남양→태하→현포→천부)",
+            "color": "#ef7fb0",
+            "stops": [
+                "천부정류장",
+                "관음도",
+                "저동약국",
+                "울릉군도동정류소",
+                "사동항",
+                "남양",
+                "태하",
+                "현포",
+                "천부정류장",
+            ],
+        },
+        {
+            "id": "22",
+            "name": "22노선 (천부→현포→태하→남양→사동항→도동→저동여객선터미널→관음도→천부)",
+            "color": "#ff8c42",
+            "stops": [
+                "천부정류장",
+                "현포",
+                "태하",
+                "남양",
+                "사동항",
+                "울릉군도동정류소",
+                "저동여객선터미널",
+                "관음도",
+                "천부정류장",
+            ],
+        },
+    ]
+
+
+@st.cache_data(show_spinner=False)
+def build_bus_routes():
+    """노선 정의를 좌표와 함께 반환."""
+    df = load_bus_stops_csv()
+    routes = []
+
+    # 모든 정류장을 기본으로 포함(경유 노선은 추후 채움)
+    stop_map: dict[str, dict] = {}
+    for _, row in df.iterrows():
+        key = _norm_text(row["stop_name"])
+        stop_map[key] = {
+            "name": row["stop_name"],
+            "lat": float(row["lat"]),
+            "lon": float(row["lon"]),
+            "routes": [],
+        }
+
+    # 노선 정의에 포함된 정류장에 경유 노선 정보 채우기 + 라인 포인트 생성
+    for route in _bus_route_defs():
+        pts = []
+        loop_routes = {"1", "2", "5", "11", "22"}
+
+        if route["id"] in loop_routes and not df.empty:
+            # 섬 일주/왕복 노선은 모든 정류장을 각도 기준으로 정렬해 선을 그린다.
+            center_lat = df["lat"].mean()
+            center_lon = df["lon"].mean()
+
+            def angle(row):
+                return math.atan2(row["lat"] - center_lat, row["lon"] - center_lon)
+
+            df_sorted = df.copy()
+            df_sorted["ang"] = df_sorted.apply(angle, axis=1)
+            df_sorted = df_sorted.sort_values("ang").reset_index(drop=True)
+
+            # 시작점을 앵커 정류장 근처로 회전
+            anchor_match = _match_bus_stop(df, route["stops"][0])
+            start_idx = 0
+            if anchor_match:
+                ax, ay = anchor_match
+                best = None
+                best_d = None
+                for i, row in df_sorted.iterrows():
+                    d = abs(row["lat"] - ax) + abs(row["lon"] - ay)
+                    if best_d is None or d < best_d:
+                        best_d = d
+                        best = i
+                if best is not None:
+                    start_idx = best
+            rotated = pd.concat([df_sorted.iloc[start_idx:], df_sorted.iloc[:start_idx]])
+            pts = [(float(r.lat), float(r.lon)) for r in rotated[["lat", "lon"]].itertuples()]
+
+            # 모든 정류장을 이 노선 경유로 표시
+            for key, info in stop_map.items():
+                info["routes"].append(route["name"])
+
+        else:
+            # 정의된 정류장 순서대로만 연결
+            for stop_name in route["stops"]:
+                match = _match_bus_stop(df, stop_name)
+                if match:
+                    lat, lon = match
+                    pts.append((lat, lon))
+                    key = _norm_text(stop_name)
+                    if key not in stop_map:
+                        stop_map[key] = {
+                            "name": stop_name,
+                            "lat": lat,
+                            "lon": lon,
+                            "routes": [],
+                        }
+                    stop_map[key]["routes"].append(route["name"])
+        routes.append(
+            {
+                "id": route["id"],
+                "name": route["name"],
+                "color": route["color"],
+                "points": pts,
+            }
+        )
+
+    stops = list(stop_map.values())
+    return routes, stops
 
     df = load_accidents_csv()
     if df.empty:
@@ -491,28 +728,62 @@ def render_ulleung_folium_map(kind: str = "base", height: int = 420):
         st.session_state["rockfall_points_meta"] = rockfall_meta
         if not sample_points:
             sample_points = [
-                (37.4950, 130.9145, "낙석(샘플) A"),
-                (37.4680, 130.8920, "낙석(샘플) B"),
+                (37.4950, 130.9145, "낙석 발생 위치 : (샘플) A"),
+                (37.4680, 130.8920, "낙석 발생 위치 : (샘플) B"),
             ]
         color = "orange"
     elif kind == "bus":
-        sample_points = [
-            (37.4868, 130.9098, "버스(샘플) 101"),
-            (37.4758, 130.9032, "버스(샘플) 202"),
-        ]
+        routes, bus_stops = build_bus_routes()
+        if not bus_stops:
+            bus_stops = [
+                {"name": "버스정류장(샘플)", "lat": 37.4868, "lon": 130.9098, "routes": ["샘플"]},
+                {"name": "버스정류장(샘플2)", "lat": 37.4758, "lon": 130.9032, "routes": ["샘플"]},
+            ]
+        st.session_state["bus_stops_meta"] = bus_stops
+
+        sample_points = []
         color = "blue"
+        for stop in bus_stops:
+            name = stop.get("name", "(이름 없음)")
+            routes_txt = (
+                ", ".join(stop.get("routes", [])) if stop.get("routes") else "경유 노선 정보 없음"
+            )
+            label = f"정류장 : {name}<br/>경유 노선 : {routes_txt}"
+            sample_points.append((stop["lat"], stop["lon"], label))
     else:
         sample_points = []
         color = "green"
 
     fg = folium.FeatureGroup(name=kind)
 
-    # 마커가 많을 때를 대비해 클러스터 사용(가능한 경우)
+    # 마커 클러스터 사용(사고/낙석은 항상 클러스터, 버스는 전체 표시를 위해 클러스터 미사용)
     marker_parent = fg
-    if MarkerCluster is not None and len(sample_points) > 50:
-        marker_parent = MarkerCluster(name=f"{kind}_cluster").add_to(fg)
+    marker_points = sample_points
+    if kind == "bus":
+        # bus는 경유 노선 색상 기반으로 마커 색을 나눔
+        routes_defs = {r["name"]: r["color"] for r in _bus_route_defs()}
+        marker_points = []
+        for stop in st.session_state.get("bus_stops_meta", []):
+            routes_txt = (
+                ", ".join(stop.get("routes", []))
+                if stop.get("routes")
+                else "경유 노선 정보 없음"
+            )
+            label = f"정류장 : {stop['name']}<br/>경유 노선 : {routes_txt}"
+            first_route = stop.get("routes", [None])[0] if stop.get("routes") else None
+            color_for_stop = routes_defs.get(first_route, "#666666")
+            marker_points.append((stop["lat"], stop["lon"], label, color_for_stop))
 
-    for lat, lon, label in sample_points:
+    if MarkerCluster is not None and kind not in {"bus"}:
+        if kind in {"accident", "rockfall"} or len(marker_points) > 50:
+            marker_parent = MarkerCluster(name=f"{kind}_cluster").add_to(fg)
+
+    for mp in marker_points:
+        if kind == "bus":
+            lat, lon, label, m_color = mp
+        else:
+            lat, lon, label = mp
+            m_color = color
         # hover(tooltip)는 사용하지 않고, 클릭(popup)만 사용
         # 클릭 시 뜨는 정보(팝업) 크기/폰트 줄이기
         popup_html = f"""
@@ -525,11 +796,26 @@ def render_ulleung_folium_map(kind: str = "base", height: int = 420):
         folium.CircleMarker(
             location=(lat, lon),
             radius=5,
-            color=color,
+            color=m_color,
             fill=True,
             fill_opacity=0.85,
             popup=popup,
         ).add_to(marker_parent)
+
+    # 노선 라인(버스만 해당)
+    if kind == "bus":
+        routes, _ = build_bus_routes()
+        for r in routes:
+            pts = r.get("points", [])
+            if len(pts) < 2:
+                continue
+            folium.PolyLine(
+                pts,
+                color=r.get("color", "blue"),
+                weight=6,
+                opacity=0.65,
+                tooltip=r.get("name", ""),
+            ).add_to(fg)
 
     fg.add_to(m)
 
@@ -1101,6 +1387,8 @@ if "selected_rockfall_meta" not in st.session_state:
     st.session_state["selected_rockfall_meta"] = None
 if "selected_rockfall_photo_path" not in st.session_state:
     st.session_state["selected_rockfall_photo_path"] = None
+if "selected_bus_meta" not in st.session_state:
+    st.session_state["selected_bus_meta"] = None
 
 # -----------------------------
 # Helper functions for accident photo lookup
@@ -1250,6 +1538,7 @@ with left:
         selected_rockfall_meta = st.session_state.get("selected_rockfall_meta")
         selected_acc_photo = st.session_state.get("selected_acc_photo_path")
         selected_acc_meta = st.session_state.get("selected_acc_meta")
+        selected_bus_meta = st.session_state.get("selected_bus_meta")
 
         # 사진 영역 높이 고정(사진이 크거나 없을 때도 레이아웃 유지)
         with st.container(height=PHOTO_H):
@@ -1277,10 +1566,12 @@ with left:
         st.markdown('<div class="card-title">자세히 보기</div>', unsafe_allow_html=True)
 
         # 선택된 사고 정보는 여기(설명 텍스트)에 표시
-        if selected_rockfall_meta:
-            st.write(selected_rockfall_meta)
+        if selected_bus_meta:
+            st.markdown(str(selected_bus_meta).replace("\n", "  \n"))
+        elif selected_rockfall_meta:
+            st.markdown(str(selected_rockfall_meta).replace("\n", "  \n"))
         elif selected_acc_meta:
-            st.write(selected_acc_meta)
+            st.markdown(str(selected_acc_meta).replace("\n", "  \n"))
         else:
             st.markdown(
                 """
@@ -1335,10 +1626,17 @@ with right:
 
                 acc_type = "미상"
                 addr = ""
+                detail_txt = ""
 
                 if idx is not None and (not df_acc.empty) and (idx in df_acc.index):
                     row = df_acc.loc[idx]
                     addr = _row_to_address(df_acc, row)
+                    if "detail" in df_acc.columns:
+                        v = row.get("detail", None)
+                        if v is not None:
+                            s = str(v).strip()
+                            if s and s.lower() not in ["nan", "none"]:
+                                detail_txt = s
 
                     # 사고 유형 컬럼 후보
                     type_col_candidates = [
@@ -1360,18 +1658,34 @@ with right:
                     photo = find_accident_photo_by_address(addr)
 
                     # 설명 영역에 표시될 텍스트
-                    if addr:
-                        st.session_state["selected_acc_meta"] = (
-                            f"사고 유형 : {acc_type} / 주소 : {addr}"
-                        )
+                    detail_label = detail_txt if detail_txt else "(없음)"
+                    addr_label = addr if addr else "(없음)"
+
+                    summary_parts = []
+                    if detail_txt:
+                        summary_parts.append(f"{detail_txt} 지점에서")
                     else:
-                        st.session_state["selected_acc_meta"] = (
-                            f"사고 유형 : {acc_type} / 주소 : (없음)"
-                        )
+                        summary_parts.append("현장에서")
+                    if acc_type != "미상":
+                        summary_parts.append(f"{acc_type} 발생,")
+                    else:
+                        summary_parts.append("사고 발생,")
+                    summary_parts.append("통행 주의")
+                    summary = " ".join(summary_parts)
+
+                    st.session_state["selected_acc_meta"] = "\n".join(
+                        [
+                            f"상세 위치 : {detail_label}",
+                            f"사고 유형 : {acc_type}",
+                            f"주소 : {addr_label}",
+                            f"요약(예시) : {summary}",
+                        ]
+                    )
 
                     st.session_state["selected_acc_photo_path"] = (
                         str(photo) if photo else None
                     )
+                    st.session_state["selected_bus_meta"] = None
 
         with t2:
             st.caption("울릉군 낙석 발생 지점")
@@ -1397,21 +1711,58 @@ with right:
                     if best is not None and best_d is not None and best_d < 1e-5:
                         name = best.get("name", "")
                         photo = best.get("photo", None)
-                        if name:
-                            st.session_state["selected_rockfall_meta"] = (
-                                f"낙석 위치 : {name}"
-                            )
-                        else:
-                            st.session_state["selected_rockfall_meta"] = (
-                                "낙석 위치 : (없음)"
-                            )
+                        location_label = name if name else "(없음)"
+                        notice_line = "통제 공지(예시) : **시 **분부터 **시 **분까지 도로 통제"
+                        st.session_state["selected_rockfall_meta"] = "\n".join(
+                            [
+                                f"낙석 발생 위치 : {location_label}",
+                                notice_line,
+                            ]
+                        )
                         st.session_state["selected_rockfall_photo_path"] = (
                             str(photo) if photo else None
                         )
+                        st.session_state["selected_bus_meta"] = None
 
         with t3:
-            st.caption("울릉군 버스 실시간 상황(샘플)")
-            render_ulleung_folium_map(kind="bus", height=MAP_H)
+            st.caption("울릉군 버스 노선/정류장")
+            bus_map_state = render_ulleung_folium_map(kind="bus", height=MAP_H)
+            if isinstance(bus_map_state, dict):
+                last = bus_map_state.get("last_object_clicked")
+                bus_meta = st.session_state.get("bus_stops_meta", [])
+                if (
+                    isinstance(last, dict)
+                    and "lat" in last
+                    and "lng" in last
+                    and bus_meta
+                ):
+                    lat0 = float(last["lat"])
+                    lon0 = float(last["lng"])
+                    best = None
+                    best_d = None
+                    for p in bus_meta:
+                        d = abs(float(p["lat"]) - lat0) + abs(float(p["lon"]) - lon0)
+                        if best_d is None or d < best_d:
+                            best_d = d
+                            best = p
+                    if best is not None and best_d is not None and best_d < 1e-5:
+                        name = best.get("name", "")
+                        routes_txt = (
+                            ", ".join(best.get("routes", []))
+                            if best.get("routes")
+                            else "노선 정보 없음"
+                        )
+                        st.session_state["selected_bus_meta"] = "\n".join(
+                            [
+                                f"정류장 : {name}",
+                                f"경유 노선 : {routes_txt}",
+                            ]
+                        )
+                        # 다른 섹션 선택 해제
+                        st.session_state["selected_rockfall_meta"] = None
+                        st.session_state["selected_rockfall_photo_path"] = None
+                        st.session_state["selected_acc_meta"] = None
+                        st.session_state["selected_acc_photo_path"] = None
 
         st.caption("※ 확대해서 확인해보세요")
 
