@@ -3,6 +3,7 @@ import pandas as pd
 from pathlib import Path
 import re
 import time
+import unicodedata
 import matplotlib.pyplot as plt
 from matplotlib import font_manager as fm
 
@@ -283,34 +284,80 @@ def load_rockfall_points() -> tuple[list[tuple[float, float, str]], list[str]]:
     if not rock_dir.exists():
         return [], []
 
-    coords_path = Path(__file__).parent / "rockfall_coords.csv"
-    if coords_path.exists():
-        df_coords = pd.read_csv(coords_path, encoding="utf-8")
-        needed = {"filename", "latitude", "longitude"}
-        if needed.issubset(df_coords.columns):
-            points = []
-            meta = []
-            for _, row in df_coords.iterrows():
-                lat = pd.to_numeric(row.get("latitude", None), errors="coerce")
-                lon = pd.to_numeric(row.get("longitude", None), errors="coerce")
-                if pd.isna(lat) or pd.isna(lon):
+    coords_final_path = Path(__file__).parent / "rockfall_coords_final.csv"
+    def _read_csv_safely(path: Path):
+        try:
+            return pd.read_csv(path, encoding="utf-8")
+        except Exception:
+            try:
+                return pd.read_csv(path, encoding="utf-8-sig")
+            except Exception:
+                return pd.read_csv(path)
+
+    def _build_from_coords_df(df_coords: pd.DataFrame):
+        if df_coords.empty:
+            return [], []
+
+        df_coords = df_coords.copy()
+        df_coords.columns = [str(c).strip() for c in df_coords.columns]
+
+        lat_col = next(
+            (c for c in ["latitude", "Latitude", "lat", "위도"] if c in df_coords.columns),
+            None,
+        )
+        lon_col = next(
+            (c for c in ["longitude", "Longitude", "lon", "경도"] if c in df_coords.columns),
+            None,
+        )
+        if not lat_col or not lon_col:
+            return [], []
+
+        address_cols = [
+            c for c in ["실제 주소", "address", "주소", "장소", "filename"] if c in df_coords.columns
+        ]
+
+        points = []
+        meta = []
+
+        for _, row in df_coords.iterrows():
+            lat = pd.to_numeric(row.get(lat_col, None), errors="coerce")
+            lon = pd.to_numeric(row.get(lon_col, None), errors="coerce")
+            if pd.isna(lat) or pd.isna(lon):
+                continue
+
+            address = ""
+            for c in address_cols:
+                v = row.get(c, None)
+                if v is None:
                     continue
-                name = row.get("filename", "")
-                if not name:
-                    continue
-                address = row.get("address", "") or Path(str(name)).stem
-                photo_path = rock_dir / str(name)
-                points.append((float(lat), float(lon), f"낙석: {address}"))
-                meta.append(
-                    {
-                        "lat": float(lat),
-                        "lon": float(lon),
-                        "photo": str(photo_path) if photo_path.exists() else None,
-                        "name": str(address),
-                    }
-                )
-            if points:
-                return points, meta
+                s = str(v).strip()
+                if s:
+                    address = s
+                    break
+
+            label_text = address or "위치 미상"
+
+            photo = _find_rockfall_photo(address) if address else None
+            if photo is None and "filename" in row:
+                photo = _find_rockfall_photo(row.get("filename", ""))
+
+            points.append((float(lat), float(lon), f"낙석: {label_text}"))
+            meta.append(
+                {
+                    "lat": float(lat),
+                    "lon": float(lon),
+                    "photo": str(photo) if photo else None,
+                    "name": str(label_text),
+                }
+            )
+
+        return points, meta
+
+    # rockfall_coords_final.csv만 사용(최신 좌표/주소)
+    if coords_final_path.exists():
+        points, meta = _build_from_coords_df(_read_csv_safely(coords_final_path))
+        if points:
+            return points, meta
 
     df = load_accidents_csv()
     if df.empty:
@@ -1063,6 +1110,7 @@ if "selected_rockfall_photo_path" not in st.session_state:
 def _norm_text(s: str) -> str:
     """주소/파일명 매칭용 간단 정규화 (공백/특수문자 제거)."""
     s = "" if s is None else str(s)
+    s = unicodedata.normalize("NFC", s)
     s = s.strip().lower()
     return re.sub(r"[^0-9a-z가-힣]+", "", s)
 
@@ -1112,6 +1160,30 @@ def find_accident_photo_by_address(address: str):
         if p.suffix.lower() not in exts:
             continue
         if target and target in _norm_text(p.stem):
+            return p
+
+    return None
+
+
+def _find_rockfall_photo(address: str | Path | None):
+    """rockfall 폴더에서 주소/파일명 기반으로 사진 찾기."""
+    rock_dir = Path(__file__).parent / "rockfall"
+    if not rock_dir.exists() or not rock_dir.is_dir():
+        return None
+
+    target = _norm_text(str(address)) if address is not None else ""
+    if not target:
+        return None
+
+    exts = {".jpg", ".jpeg", ".png", ".webp"}
+
+    for p in rock_dir.iterdir():
+        if not p.is_file():
+            continue
+        if p.suffix.lower() not in exts:
+            continue
+        candidate = _norm_text(p.stem)
+        if candidate == target or target in candidate or candidate in target:
             return p
 
     return None
