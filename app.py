@@ -5,8 +5,13 @@ import re
 import time
 import math
 import unicodedata
+from datetime import datetime
+import base64
+import textwrap
 import matplotlib.pyplot as plt
 from matplotlib import font_manager as fm
+from PIL import Image
+import os
 
 try:
     import folium
@@ -29,10 +34,10 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Matplotlib 한글 폰트 설정 (환경별 자동 선택)
+# Matplotlib 한글 폰트 설정
 _font_candidates = [
     "AppleGothic",  # macOS
-    "NanumGothic",  # Linux/Windows (설치 시)
+    "NanumGothic",  # Linux/Windows
     "Malgun Gothic",  # Windows
     "Noto Sans CJK KR",  # Linux
     "Noto Sans KR",  # Linux
@@ -45,13 +50,17 @@ for _fname in _font_candidates:
 plt.rcParams["axes.unicode_minus"] = False
 
 # -----------------------------
-# CSS (카드/여백/폰트 약간 정리)
+# CSS (업데이트됨: 해상공지 카드 디자인 적용)
 # -----------------------------
 st.markdown(
     """
 <style>
-/* 전체 폭 여백 조금 줄이기 */
-.block-container { padding-top: 2.4rem; padding-bottom: 2.4rem; }
+/* 전체 폭 여백 조정 */
+.block-container {
+  padding-top: 0.8rem;
+  padding-bottom: 2.4rem;
+  max-width: 100%;
+}
 
 .notice-pill {
   width: 100%;
@@ -65,6 +74,23 @@ st.markdown(
   border: 1px solid #e6e6e6;
 }
 
+.dashboard-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0.2rem 0 0.6rem 0;
+}
+.dashboard-title img {
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+}
+.dashboard-title .title-text {
+  font-size: 1.6rem;
+  font-weight: 800;
+  color: #1f1f1f;
+}
+
 .card-title {
   font-weight: 700;
   margin-bottom: 8px;
@@ -73,11 +99,30 @@ st.markdown(
   color: #666;
   font-size: 0.9rem;
 }
-.small-muted {
-  color: #777;
-  font-size: 0.85rem;
+
+.photo-placeholder {
+  background: #e9f2ff;
+  color: #0b5cab;
+  border-radius: 16px;
+  height: 250px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 400;
+  font-size: 1.05rem;
 }
 
+/* UI 요소 z-index 조정 */
+div[data-baseweb="select"] { position: relative; z-index: 3000; }
+div[data-baseweb="popover"] { z-index: 4000; }
+section.main iframe { position: relative; z-index: 1; }
+
+/* 다이얼로그 스타일 */
+div[data-testid="stDialog"] > div { width: min(96vw, 1400px); margin: 0 auto; }
+div[data-testid="stDialog"] div[role="dialog"] { max-height: 92vh; padding: 0; }
+div[data-testid="stDialog"] img { max-height: 86vh; width: 100%; object-fit: contain; display: block; }
+
+/* --- [NEW] Card & Sea Notice Styles --- */
 .r2-card {
   background: #f6f7fb;
   border: 1px solid #ebedf3;
@@ -85,6 +130,7 @@ st.markdown(
   padding: 18px 18px 16px 18px;
   height: 90%;
   box-sizing: border-box;
+  overflow-y: auto;
 }
 .r2-top {
   display: flex;
@@ -108,57 +154,26 @@ st.markdown(
 .r2-card-body {
   margin-top: 8px;
 }
-.sea-bars {
-  display: grid;
-  gap: 12px;
-  margin-bottom: 14px;
+
+/* Sea Section & Layout */
+.sea-section {
+  background: #ffffff;
+  border: 1px solid #e8ebf2;
+  border-radius: 16px;
+  padding: 12px;
+  margin-bottom: 12px;
 }
-.bar-row {
-  display: grid;
-  grid-template-columns: 120px 1fr 80px;
-  gap: 10px;
-  align-items: center;
-}
-.bar-label {
-  font-weight: 700;
-}
-.bar-sub {
+.sea-section-title {
   font-size: 0.82rem;
-  font-weight: 400;
-  color: #666;
-}
-.bar-track {
-  background: #ffffff;
-  border: 1px solid #edf0f5;
-  border-radius: 999px;
-  padding: 4px;
-}
-.bar-fill {
-  height: 14px;
-  border-radius: 999px;
-  position: relative;
-}
-.bar-pill {
-  position: absolute;
-  left: 8px;
-  top: -8px;
-  background: #ffffff;
-  border-radius: 999px;
-  padding: 2px 8px;
-  font-size: 0.72rem;
-  font-weight: 700;
-  border: 1px solid rgba(0,0,0,0.06);
-}
-.bar-value {
-  color: #666;
-  font-size: 0.85rem;
-  text-align: right;
+  font-weight: 500;
+  color: #6b7280;
+  margin-bottom: 8px;
+  letter-spacing: 0.2px;
 }
 .sea-latest {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 12px;
 }
 .sea-pill {
   background: #e8f0ff;
@@ -173,55 +188,126 @@ st.markdown(
   font-weight: 700;
   color: #1d1d1d;
 }
+
+/* Bar Charts (Updated) */
+.sea-bars {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 2px;
+}
+.bar-row {
+  display: grid;
+  grid-template-columns: 120px 1fr; /* 값 표시 영역 제거(바 내부로 이동) */
+  gap: 10px;
+  align-items: center;
+}
+.bar-label {
+  font-weight: 600;
+  font-size: 0.86rem;
+}
+.bar-label-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.bar-sub {
+  font-size: 0.82rem;
+  font-weight: 400;
+  color: #666;
+}
+.bar-track {
+  background: #ffffff;
+  border: 1px solid #edf0f5;
+  border-radius: 999px;
+  padding: 4px;
+  position: relative;
+}
+.bar-fill {
+  height: 14px;
+  border-radius: 999px;
+  position: relative;
+}
 .bar-fill-split {
   height: 14px;
   border-radius: 999px;
   overflow: hidden;
   display: flex;
+  position: relative;
 }
 .bar-seg {
   height: 100%;
 }
-.sea-table {
+.bar-value-onfill {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
   background: #ffffff;
-  border: 1px solid #e8ebf2;
-  border-radius: 14px;
-  padding: 10px 12px;
+  color: #374151;
+  font-size: 0.74rem;
+  font-weight: 700;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 4px 10px rgba(17, 24, 39, 0.1);
+  pointer-events: none;
+  white-space: nowrap;
 }
-.sea-table-row {
-  display: grid;
-  grid-template-columns: 90px 1fr 1fr 1fr 1fr 1fr;
-  gap: 8px;
-  padding: 8px 0;
-  border-top: 1px solid #f0f2f6;
+
+/* Tooltip (Help Pop) */
+.help-pop {
+  position: relative;
+  display: inline-block;
 }
-.sea-table-row:first-child {
-  border-top: none;
+.help-pop summary {
+  list-style: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid #d1d7e2;
+  color: #6b7280;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  background: #ffffff;
 }
-.sea-table-head {
-  font-weight: 800;
-  background: #f0f2f7;
+.help-pop summary::-webkit-details-marker {
+  display: none;
+}
+.help-pop-body {
+  display: none;
+  position: absolute;
+  top: 22px;
+  left: 0;
+  min-width: 200px;
+  background: #ffffff;
+  border: 1px solid #e5e9f2;
   border-radius: 10px;
   padding: 8px 10px;
+  font-size: 0.78rem;
+  font-weight: 400;
+  color: #4b5563;
+  line-height: 1.4;
+  box-shadow: 0 6px 16px rgba(17, 24, 39, 0.08);
+  z-index: 100;
 }
-.road-list {
-  display: grid;
-  gap: 10px;
+.help-pop[open] .help-pop-body {
+  display: block;
 }
+
+/* Road List Styles */
+.road-list { display: grid; gap: 10px; }
 .road-item {
   background: #ffffff;
   border: 1px solid #e8ebf2;
   border-radius: 14px;
   padding: 10px 12px;
 }
-.road-item-title {
-  font-weight: 800;
-  margin-bottom: 4px;
-}
-.road-item-meta {
-  color: #666;
-  font-size: 0.82rem;
-}
+.road-item-title { font-weight: 800; margin-bottom: 4px; }
+.road-item-meta { color: #666; font-size: 0.82rem; }
 .road-tag {
   display: inline-block;
   margin-right: 6px;
@@ -242,41 +328,221 @@ div[data-testid="stPopover"] > button {
   border-radius: 999px;
   border: none;
 }
-
-
 </style>
 """,
     unsafe_allow_html=True,
 )
 
 
+def _accident_files_signature() -> tuple:
+    """사고 CSV 변경 감지를 위한 시그니처."""
+    data_dir = Path(__file__).parent
+    sig_items = []
+    for f in data_dir.iterdir():
+        if not f.is_file():
+            continue
+        name = unicodedata.normalize("NFC", f.name)
+        if not name.endswith(".csv"):
+            continue
+        if "교통계" in name and "교통사고" in name and "년도" in name:
+            stat = f.stat()
+            sig_items.append((name, stat.st_mtime, stat.st_size))
+            continue
+        if re.search(r"ulleung_accidents_with_coords_20\d{2}\.csv", name):
+            stat = f.stat()
+            sig_items.append((name, stat.st_mtime, stat.st_size))
+    fallback = data_dir / "ulleung_accidents_with_coords.csv"
+    if fallback.exists():
+        stat = fallback.stat()
+        sig_items.append((fallback.name, stat.st_mtime, stat.st_size))
+    return tuple(sorted(sig_items))
+
+
 @st.cache_data(show_spinner=False)
-def load_accidents_csv() -> pd.DataFrame:
-    """프로젝트 루트의 사고 CSV를 로드.
+def load_accidents_csv(file_signature: tuple | None = None) -> pd.DataFrame:
+    """사고 좌표 CSV를 로드(연도별 파일 우선)."""
 
-    기대 컬럼:
-      - latitude, longitude (필수)
-      - 나머지는 있으면 popup에 같이 보여줄 수 있음
-    """
+    def _read_csv_safely(path: Path) -> pd.DataFrame:
+        for enc in ("utf-8-sig", "utf-8", "cp949", "euc-kr"):
+            try:
+                return pd.read_csv(path, encoding=enc)
+            except Exception:
+                continue
+        return pd.read_csv(path)
 
-    csv_path = Path(__file__).parent / "ulleung_accidents_with_coords.csv"
+    def _parse_year_from_name(name: str):
+        m = re.search(r"(20\\d{2})년도", name)
+        if not m:
+            m = re.search(r"ulleung_accidents_with_coords_(20\d{2})\.csv", name)
+            if not m:
+                return None
+        try:
+            return int(m.group(1))
+        except Exception:
+            return None
+
+    data_dir = Path(__file__).parent
+    year_files = []
+    year_with_coords = []
+    for f in data_dir.iterdir():
+        if not f.is_file():
+            continue
+        name = unicodedata.normalize("NFC", f.name)
+        if not name.endswith(".csv"):
+            continue
+        if "교통계" in name and "교통사고" in name and "년도" in name:
+            year_files.append(f)
+            if name.endswith("_with_coords.csv"):
+                year_with_coords.append(f)
+            continue
+        if re.search(r"ulleung_accidents_with_coords_20\d{2}\.csv", name):
+            year_with_coords.append(f)
+
+    target_files = year_with_coords if year_with_coords else year_files
+    df_list = []
+    for f in sorted(target_files):
+        name = unicodedata.normalize("NFC", f.name)
+        year = _parse_year_from_name(name)
+        if year is None:
+            continue
+
+        temp = _read_csv_safely(f)
+        temp.columns = [str(c).strip() for c in temp.columns]
+
+        lat_col = next(
+            (c for c in ["latitude", "Latitude", "lat", "위도"] if c in temp.columns),
+            None,
+        )
+        lon_col = next(
+            (c for c in ["longitude", "Longitude", "lon", "경도"] if c in temp.columns),
+            None,
+        )
+        if not lat_col or not lon_col:
+            continue
+
+        addr_col = next(
+            (c for c in temp.columns if "사고" in c and "장소" in c),
+            None,
+        )
+        type_col = next(
+            (
+                c
+                for c in temp.columns
+                if ("종별" in c)
+                or (c in ["type", "accident_type", "사고유형", "사고_type"])
+            ),
+            None,
+        )
+
+        temp["latitude"] = pd.to_numeric(temp[lat_col], errors="coerce")
+        temp["longitude"] = pd.to_numeric(temp[lon_col], errors="coerce")
+        temp = temp.dropna(subset=["latitude", "longitude"]).copy()
+
+        if addr_col:
+            temp["raw"] = temp[addr_col].astype(str)
+            temp["detail"] = temp[addr_col].astype(str)
+        if type_col:
+            temp["type"] = temp[type_col].astype(str)
+        temp["year"] = year
+
+        cols = [
+            c
+            for c in [
+                "clean_normalized",
+                "raw",
+                "detail",
+                "latitude",
+                "longitude",
+                "type",
+                "year",
+            ]
+            if c in temp.columns
+        ]
+        if cols:
+            df_list.append(temp[cols])
+
+    if df_list:
+        return pd.concat(df_list, ignore_index=True)
+
+    csv_path = data_dir / "ulleung_accidents_with_coords.csv"
     if not csv_path.exists():
         return pd.DataFrame()
 
-    df = pd.read_csv(csv_path)
-
-    # 컬럼명 표준화(혹시 대소문자/공백이 섞여있을 경우 대비)
+    df = _read_csv_safely(csv_path)
     df.columns = [str(c).strip() for c in df.columns]
-
-    # latitude/longitude 없으면 빈 DF
     if "latitude" not in df.columns or "longitude" not in df.columns:
         return pd.DataFrame()
 
     df["latitude"] = pd.to_numeric(df["latitude"], errors="coerce")
     df["longitude"] = pd.to_numeric(df["longitude"], errors="coerce")
     df = df.dropna(subset=["latitude", "longitude"]).copy()
-
+    df["year"] = 2025
     return df
+
+
+@st.cache_data(show_spinner=False)
+def load_ev_charger_points() -> list[tuple[float, float, str]]:
+    """울릉군 전기차 충전소 좌표 로드."""
+    csv_path = Path(__file__).parent / "울릉군 전기차 충전소 2020-07-13.csv"
+    if not csv_path.exists():
+        return []
+
+    def _read_csv_safely(path: Path):
+        try:
+            return pd.read_csv(path, encoding="utf-8-sig")
+        except Exception:
+            try:
+                return pd.read_csv(path, encoding="utf-8")
+            except Exception:
+                return pd.read_csv(path)
+
+    def _clean_text(val) -> str:
+        if val is None:
+            return ""
+        s = str(val).strip()
+        if not s or s.lower() in ["nan", "none"]:
+            return ""
+        return s
+
+    def _first_text(*vals: str) -> str:
+        for v in vals:
+            if v:
+                return v
+        return ""
+
+    df = _read_csv_safely(csv_path)
+    df.columns = [str(c).strip() for c in df.columns]
+
+    lat_col = next(
+        (c for c in ["위도", "latitude", "Latitude", "lat"] if c in df.columns), None
+    )
+    lon_col = next(
+        (c for c in ["경도", "longitude", "Longitude", "lon"] if c in df.columns), None
+    )
+    if not lat_col or not lon_col:
+        return []
+
+    df["lat"] = pd.to_numeric(df[lat_col], errors="coerce")
+    df["lon"] = pd.to_numeric(df[lon_col], errors="coerce")
+    df = df.dropna(subset=["lat", "lon"]).copy()
+
+    points = []
+    for _, row in df.iterrows():
+        lat = float(row["lat"])
+        lon = float(row["lon"])
+
+        name = _clean_text(row.get("충전소명"))
+        detail = _clean_text(row.get("충전소위치상세"))
+        road_addr = _clean_text(row.get("소재지도로명주소"))
+        lot_addr = _clean_text(row.get("소재지지번주소"))
+        address = _first_text(road_addr, lot_addr, detail)
+
+        label_name = name if name else "충전소"
+        label_addr = address if address else "주소 미상"
+        label = f"충전소 : {label_name}<br/>주소 : {label_addr}"
+        points.append((lat, lon, label))
+
+    return points
 
 
 def load_rockfall_points() -> tuple[list[tuple[float, float, str]], list[str]]:
@@ -286,6 +552,7 @@ def load_rockfall_points() -> tuple[list[tuple[float, float, str]], list[str]]:
         return [], []
 
     coords_final_path = Path(__file__).parent / "rockfall_coords_final.csv"
+
     def _read_csv_safely(path: Path):
         try:
             return pd.read_csv(path, encoding="utf-8")
@@ -303,18 +570,28 @@ def load_rockfall_points() -> tuple[list[tuple[float, float, str]], list[str]]:
         df_coords.columns = [str(c).strip() for c in df_coords.columns]
 
         lat_col = next(
-            (c for c in ["latitude", "Latitude", "lat", "위도"] if c in df_coords.columns),
+            (
+                c
+                for c in ["latitude", "Latitude", "lat", "위도"]
+                if c in df_coords.columns
+            ),
             None,
         )
         lon_col = next(
-            (c for c in ["longitude", "Longitude", "lon", "경도"] if c in df_coords.columns),
+            (
+                c
+                for c in ["longitude", "Longitude", "lon", "경도"]
+                if c in df_coords.columns
+            ),
             None,
         )
         if not lat_col or not lon_col:
             return [], []
 
         address_cols = [
-            c for c in ["실제 주소", "address", "주소", "장소", "filename"] if c in df_coords.columns
+            c
+            for c in ["실제 주소", "address", "주소", "장소", "filename"]
+            if c in df_coords.columns
         ]
 
         points = []
@@ -359,6 +636,7 @@ def load_rockfall_points() -> tuple[list[tuple[float, float, str]], list[str]]:
         points, meta = _build_from_coords_df(_read_csv_safely(coords_final_path))
         if points:
             return points, meta
+    return [], [] # Fallback empty if file not found
 
 
 @st.cache_data(show_spinner=False)
@@ -375,9 +653,15 @@ def load_bus_stops_csv() -> pd.DataFrame:
 
     df.columns = [str(c).strip() for c in df.columns]
 
-    lat_col = next((c for c in ["위도", "latitude", "Latitude"] if c in df.columns), None)
-    lon_col = next((c for c in ["경도", "longitude", "Longitude"] if c in df.columns), None)
-    name_col = next((c for c in ["정류장명", "name", "정류장"] if c in df.columns), None)
+    lat_col = next(
+        (c for c in ["위도", "latitude", "Latitude"] if c in df.columns), None
+    )
+    lon_col = next(
+        (c for c in ["경도", "longitude", "Longitude"] if c in df.columns), None
+    )
+    name_col = next(
+        (c for c in ["정류장명", "name", "정류장"] if c in df.columns), None
+    )
     if not (lat_col and lon_col and name_col):
         return pd.DataFrame()
 
@@ -561,8 +845,13 @@ def build_bus_routes():
                         best = i
                 if best is not None:
                     start_idx = best
-            rotated = pd.concat([df_sorted.iloc[start_idx:], df_sorted.iloc[:start_idx]])
-            pts = [(float(r.lat), float(r.lon)) for r in rotated[["lat", "lon"]].itertuples()]
+            rotated = pd.concat(
+                [df_sorted.iloc[start_idx:], df_sorted.iloc[:start_idx]]
+            )
+            pts = [
+                (float(r.lat), float(r.lon))
+                for r in rotated[["lat", "lon"]].itertuples()
+            ]
 
             # 모든 정류장을 이 노선 경유로 표시
             for key, info in stop_map.items():
@@ -596,66 +885,13 @@ def build_bus_routes():
     stops = list(stop_map.values())
     return routes, stops
 
-    df = load_accidents_csv()
-    if df.empty:
-        return [], []
 
-    addr_cols = [
-        c for c in ["clean_normalized", "raw", "detail", "주소"] if c in df.columns
-    ]
-    if not addr_cols:
-        return [], []
-
-    norm_lookup = {}
-    for _, row in df.iterrows():
-        lat = row.get("latitude", None)
-        lon = row.get("longitude", None)
-        if pd.isna(lat) or pd.isna(lon):
-            continue
-        for col in addr_cols:
-            val = row.get(col, None)
-            if val is None:
-                continue
-            key = _norm_text(val)
-            if key and key not in norm_lookup:
-                norm_lookup[key] = (float(lat), float(lon))
-
-    exts = {".jpg", ".jpeg", ".png", ".webp", ".JPG", ".JPEG", ".PNG", ".WEBP"}
-    points = []
-    meta = []
-    for p in rock_dir.iterdir():
-        if not p.is_file() or p.suffix not in exts:
-            continue
-        name = p.stem
-        key = _norm_text(name)
-        loc = norm_lookup.get(key)
-        if loc is None:
-            continue
-        lat, lon = loc
-        points.append((lat, lon, f"낙석: {name}"))
-        meta.append(
-            {
-                "lat": float(lat),
-                "lon": float(lon),
-                "photo": str(p),
-                "name": str(name),
-            }
-        )
-
-    return points, meta
-
-
-def render_ulleung_folium_map(kind: str = "base", height: int = 420):
-    """울릉군 Folium 지도 렌더.
-
-    kind:
-      - base: 기본 지도
-      - accident: 교통사고 지점(샘플 마커)
-      - rockfall: 낙석 발생 지점(샘플 마커)
-      - bus: 버스 실시간(샘플 마커)
-
-    실제 데이터 붙일 때는 아래 sample_points만 교체하면 됨.
-    """
+def render_ulleung_folium_map(
+    kind: str = "base",
+    height: int = 420,
+    accident_df: pd.DataFrame | None = None,
+):
+    """울릉군 Folium 지도 렌더."""
 
     if folium is None:
         st.error(
@@ -663,16 +899,20 @@ def render_ulleung_folium_map(kind: str = "base", height: int = 420):
         )
         return
 
+    requested_kind = kind
+
     # 울릉도 중심(대략)
-    center = (37.4844, 130.9057)
+    center = (37.5044, 130.8757)
 
     m = folium.Map(
         location=center, zoom_start=12, tiles="OpenStreetMap", control_scale=True
     )
 
-    # 샘플 포인트(나중에 실제 데이터로 교체)
+    # 전기차 충전소 데이터 (모든 지도에 추가 표시)
+    ev_points = load_ev_charger_points()
+
     if kind == "accident":
-        df_acc = load_accidents_csv()
+        df_acc = accident_df if accident_df is not None else load_accidents_csv()
 
         # CSV가 있으면 실제 좌표로 마커 생성
         if not df_acc.empty:
@@ -686,7 +926,7 @@ def render_ulleung_folium_map(kind: str = "base", height: int = 420):
 
             sample_points = []
             acc_points_meta = []  # 클릭 좌표 → 원본 행 인덱스 매칭용
-            # 너무 많을 수 있어서 기본은 2000개로 제한(원하면 늘리면 됨)
+            # 너무 많을 수 있어서 기본은 2000개로 제한
             for i, row in df_acc.head(2000).iterrows():
                 lat = float(row["latitude"])
                 lon = float(row["longitude"])
@@ -710,17 +950,21 @@ def render_ulleung_folium_map(kind: str = "base", height: int = 420):
             st.session_state["acc_points_meta"] = acc_points_meta
 
         else:
-            # CSV가 없거나 형식이 다르면 샘플로 fallback
-            sample_points = [
-                (37.4890, 130.9050, "사고 유형 : 사고(샘플) A"),
-                (37.4770, 130.9130, "사고 유형 : 사고(샘플) B"),
-                (37.4705, 130.8985, "사고 유형 : 사고(샘플) C"),
-            ]
-            st.session_state["acc_points_meta"] = [
-                {"idx": 0, "lat": 37.4890, "lon": 130.9050},
-                {"idx": 1, "lat": 37.4770, "lon": 130.9130},
-                {"idx": 2, "lat": 37.4705, "lon": 130.8985},
-            ]
+            if accident_df is not None:
+                sample_points = []
+                st.session_state["acc_points_meta"] = []
+            else:
+                # CSV가 없거나 형식이 다르면 샘플로 fallback
+                sample_points = [
+                    (37.4890, 130.9050, "사고 유형 : 사고(샘플) A"),
+                    (37.4770, 130.9130, "사고 유형 : 사고(샘플) B"),
+                    (37.4705, 130.8985, "사고 유형 : 사고(샘플) C"),
+                ]
+                st.session_state["acc_points_meta"] = [
+                    {"idx": 0, "lat": 37.4890, "lon": 130.9050},
+                    {"idx": 1, "lat": 37.4770, "lon": 130.9130},
+                    {"idx": 2, "lat": 37.4705, "lon": 130.8985},
+                ]
 
         color = "red"
     elif kind == "rockfall":
@@ -736,8 +980,18 @@ def render_ulleung_folium_map(kind: str = "base", height: int = 420):
         routes, bus_stops = build_bus_routes()
         if not bus_stops:
             bus_stops = [
-                {"name": "버스정류장(샘플)", "lat": 37.4868, "lon": 130.9098, "routes": ["샘플"]},
-                {"name": "버스정류장(샘플2)", "lat": 37.4758, "lon": 130.9032, "routes": ["샘플"]},
+                {
+                    "name": "버스정류장(샘플)",
+                    "lat": 37.4868,
+                    "lon": 130.9098,
+                    "routes": ["샘플"],
+                },
+                {
+                    "name": "버스정류장(샘플2)",
+                    "lat": 37.4758,
+                    "lon": 130.9032,
+                    "routes": ["샘플"],
+                },
             ]
         st.session_state["bus_stops_meta"] = bus_stops
 
@@ -746,7 +1000,9 @@ def render_ulleung_folium_map(kind: str = "base", height: int = 420):
         for stop in bus_stops:
             name = stop.get("name", "(이름 없음)")
             routes_txt = (
-                ", ".join(stop.get("routes", [])) if stop.get("routes") else "경유 노선 정보 없음"
+                ", ".join(stop.get("routes", []))
+                if stop.get("routes")
+                else "경유 노선 정보 없음"
             )
             label = f"정류장 : {name}<br/>경유 노선 : {routes_txt}"
             sample_points.append((stop["lat"], stop["lon"], label))
@@ -819,9 +1075,35 @@ def render_ulleung_folium_map(kind: str = "base", height: int = 420):
 
     fg.add_to(m)
 
+    # 전기차 충전소 마커(모든 지도에 오버레이)
+    if ev_points:
+        ev_fg = folium.FeatureGroup(name="ev_chargers")
+        for lat, lon, label in ev_points:
+            popup_html = f"""
+            <div style='font-size:12px; line-height:1.25; max-width:220px; white-space:normal;'>
+                {label}
+            </div>
+            """
+            popup = folium.Popup(popup_html, max_width=240)
+            folium.CircleMarker(
+                location=(lat, lon),
+                radius=2,
+                color="#2ca02c",
+                fill=True,
+                fill_opacity=0.9,
+                popup=popup,
+            ).add_to(ev_fg)
+
+        ev_fg.add_to(m)
+
     # 지도 렌더 (가능하면 클릭 이벤트까지 받기)
     if st_folium is not None:
-        return st_folium(m, height=height, width=None)
+        return st_folium(
+            m,
+            height=height,
+            width=None,
+            key=f"folium_{requested_kind}",
+        )
 
     # streamlit-folium이 없으면 이벤트 없이 지도만 표시
     import streamlit.components.v1 as components
@@ -832,11 +1114,7 @@ def render_ulleung_folium_map(kind: str = "base", height: int = 420):
 
 @st.cache_data(show_spinner=False)
 def load_enforcement_counts_csv() -> pd.DataFrame:
-    """여러 해의 교통단속 CSV를 로드.
-
-    기대 컬럼:
-      - 위반일시 또는 연도/월
-    """
+    """여러 해의 교통단속 CSV를 로드."""
     data_dir = Path(__file__).parent / "enforcement_data"
     if not data_dir.exists():
         return pd.DataFrame()
@@ -862,7 +1140,6 @@ def load_enforcement_counts_csv() -> pd.DataFrame:
                 format="%Y%m%d%H%M",
                 errors="coerce",
             )
-            # 일부가 포맷이 다를 경우 fallback 파싱
             if temp["위반일시"].isna().all():
                 temp["위반일시"] = pd.to_datetime(s, errors="coerce")
             temp["연도"] = temp["위반일시"].dt.year
@@ -995,59 +1272,206 @@ def load_weather_passenger_monthly() -> pd.DataFrame:
     return monthly
 
 
-def _plot_weather_passenger(
-    x_vals, rain_vals, in_vals, out_vals, x_label, title, fig_size=(5.0, 3.0)
+# -----------------------------
+# Vega-Lite Spec Functions
+# -----------------------------
+
+def _vega_base_config():
+    """Vega-Lite 차트 공통 스타일 설정."""
+    return {
+        "axis": {
+            "titleFontSize": 10,
+            "labelFontSize": 10,
+            "labelColor": "#1F2D3D",
+            "titleColor": "#1F2D3D",
+            "gridColor": "#E6EEF5",
+        },
+        "view": {"stroke": "transparent"},
+    }
+
+
+def _vega_bar_spec(x_field: str, y_field: str, title: str, height: int):
+    return {
+        "padding": {"top": 6, "right": 8, "bottom": 2, "left": 8},
+        "mark": {
+            "type": "bar",
+            "cornerRadiusTopLeft": 6,
+            "cornerRadiusTopRight": 6,
+            "color": "#F5B97A",
+            "opacity": 0.65,
+        },
+        "encoding": {
+            "x": {"field": x_field, "type": "ordinal", "axis": {"labelAngle": 0}},
+            "y": {"field": y_field, "type": "quantitative"},
+            "tooltip": [
+                {"field": x_field, "type": "ordinal"},
+                {"field": y_field, "type": "quantitative"},
+            ],
+        },
+        "height": height,
+        "title": None,
+        "config": _vega_base_config(),
+    }
+
+
+def _vega_weather_passenger_spec(x_field: str, title: str, height: int):
+    return {
+        "padding": {"top": 16, "right": 8, "bottom": 2, "left": 8},
+        "layer": [
+            {
+                "transform": [{"calculate": "'월 강수량 합 (mm)'", "as": "시리즈"}],
+                "mark": {"type": "bar", "color": "#B9CFE3", "opacity": 0.45},
+                "encoding": {
+                    "x": {"field": x_field, "type": "ordinal", "axis": {"labelAngle": 0}},
+                    "y": {
+                        "field": "강수량",
+                        "type": "quantitative",
+                        "axis": {"title": "강수량(mm)"},
+                    },
+                    "color": {
+                        "field": "시리즈",
+                        "type": "nominal",
+                        "scale": {
+                            "domain": ["월 강수량 합 (mm)"],
+                            "range": ["#B9CFE3"],
+                        },
+                        "legend": {
+                            "orient": "top",
+                            "direction": "horizontal",
+                            "title": None,
+                            "offset": 6,
+                            "padding": 0,
+                            "labelFontSize": 10,
+                            "labelLimit": 120,
+                        },
+                    },
+                    "tooltip": [
+                        {"field": x_field, "type": "ordinal"},
+                        {"field": "강수량", "type": "quantitative"},
+                    ],
+                },
+            },
+            {
+                "transform": [{"calculate": "'월 입도객수'", "as": "시리즈"}],
+                "mark": {
+                    "type": "line",
+                    "color": "#2CA02C",
+                    "strokeWidth": 2.6,
+                    "point": {"filled": True, "size": 70},
+                },
+                "encoding": {
+                    "x": {"field": x_field, "type": "ordinal"},
+                    "y": {
+                        "field": "입도",
+                        "type": "quantitative",
+                        "axis": {"title": "여객수", "orient": "right"},
+                    },
+                    "color": {
+                        "field": "시리즈",
+                        "type": "nominal",
+                        "scale": {
+                            "domain": ["월 입도객수", "월 출도객수"],
+                            "range": ["#2CA02C", "#D62728"],
+                        },
+                        "legend": {
+                            "orient": "top",
+                            "direction": "horizontal",
+                            "title": None,
+                            "symbolType": "stroke",
+                            "offset": 6,
+                            "padding": 0,
+                            "labelFontSize": 10,
+                            "labelLimit": 120,
+                        },
+                    },
+                    "tooltip": [
+                        {"field": x_field, "type": "ordinal"},
+                        {"field": "입도", "type": "quantitative"},
+                    ],
+                },
+            },
+            {
+                "transform": [{"calculate": "'월 출도객수'", "as": "시리즈"}],
+                "mark": {
+                    "type": "line",
+                    "color": "#E45756",
+                    "strokeWidth": 2.6,
+                    "point": {"filled": True, "size": 70},
+                },
+                "encoding": {
+                    "x": {"field": x_field, "type": "ordinal"},
+                    "y": {
+                        "field": "출도",
+                        "type": "quantitative",
+                        "axis": None,
+                    },
+                    "color": {
+                        "field": "시리즈",
+                        "type": "nominal",
+                        "scale": {
+                            "domain": ["월 입도객수", "월 출도객수"],
+                            "range": ["#2CA02C", "#D62728"],
+                        },
+                        "legend": None,
+                    },
+                    "tooltip": [
+                        {"field": x_field, "type": "ordinal"},
+                        {"field": "출도", "type": "quantitative"},
+                    ],
+                },
+            },
+        ],
+        "height": height,
+        "resolve": {"scale": {"y": "independent", "color": "independent"}},
+        "title": None,
+        "config": _vega_base_config(),
+    }
+
+
+def _vega_bar_color_spec(
+    x_field: str, y_field: str, color_field: str, title: str, height: int
 ):
-    """강수량(막대) + 입/출항 여객수(라인) 그래프."""
-    fig, ax = plt.subplots(figsize=fig_size)
-    ax2 = ax.twinx()
-
-    ax.bar(x_vals, rain_vals, color="#6BAED6", alpha=0.45, label="강수량 합 (mm)")
-    ax2.plot(
-        x_vals,
-        in_vals,
-        marker="o",
-        linewidth=2,
-        color="#2CA02C",
-        label="입도객수",
-    )
-    ax2.plot(
-        x_vals,
-        out_vals,
-        marker="o",
-        linewidth=2,
-        linestyle="--",
-        color="#E45756",
-        label="출도객수",
-    )
-
-    ax.set_xlabel(x_label)
-    ax.set_ylabel("강수량 합 (mm)", color="#6BAED6")
-    ax2.set_ylabel("여객수")
-    ax.set_title(title)
-    ax.grid(True, axis="y", alpha=0.2)
-
-    handles = [
-        plt.Line2D([0], [0], color="#6BAED6", lw=8, alpha=0.45),
-        plt.Line2D([0], [0], color="#2CA02C", marker="o"),
-        plt.Line2D([0], [0], color="#E45756", marker="o", linestyle="--"),
-    ]
-    labels = ["강수량 합 (mm)", "입도객수", "출도객수"]
-    ax.legend(handles, labels, loc="upper left", frameon=False)
-    fig.tight_layout()
-    return fig
-
-
-def _plot_bar_matplotlib(x_vals, y_vals, x_label, title, fig_size=(5.0, 3.0)):
-    """막대 그래프 (matplotlib)"""
-    fig, ax = plt.subplots(figsize=fig_size)
-    ax.bar(x_vals, y_vals, color="#6BAED6", alpha=0.75)
-    ax.set_xlabel(x_label)
-    ax.set_ylabel("건수")
-    ax.set_title(title)
-    ax.grid(True, axis="y", alpha=0.2)
-    fig.tight_layout()
-    return fig
+    return {
+        "padding": {"top": 10, "right": 8, "bottom": 2, "left": 18},
+        "mark": {
+            "type": "bar",
+            "cornerRadiusTopLeft": 6,
+            "cornerRadiusTopRight": 6,
+            "opacity": 0.85,
+        },
+        "encoding": {
+            "x": {"field": x_field, "type": "ordinal", "axis": {"labelAngle": 0}},
+            "y": {
+                "field": y_field,
+                "type": "quantitative",
+                "axis": {"title": "여객수"},
+            },
+            "color": {
+                "field": color_field,
+                "type": "nominal",
+                "scale": {
+                    "domain": ["비수기", "성수기", "비수기(평균↑)"],
+                    "range": ["#A9CFAE", "#F1C58B", "#E6D07A"],
+                },
+                "legend": {
+                    "orient": "top-right",
+                    "direction": "horizontal",
+                    "title": None,
+                    "padding": 0,
+                    "offset": 6,
+                    "labelFontSize": 10,
+                },
+            },
+            "tooltip": [
+                {"field": x_field, "type": "ordinal"},
+                {"field": y_field, "type": "quantitative"},
+                {"field": color_field, "type": "nominal"},
+            ],
+        },
+        "height": height,
+        "title": None,
+        "config": _vega_base_config(),
+    }
 
 
 def _compute_season_map(monthly_df: pd.DataFrame, value_col: str):
@@ -1108,7 +1532,7 @@ def load_sms_classified() -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def load_sms_raw() -> pd.DataFrame:
     """원본 울릉알리미 SMS CSV 로드."""
-    path = Path(__file__).parent / "울릉알리미_텍스트.csv"
+    path = Path(__file__).parent / "울릉알리미_텍스트.csv"
     if not path.exists():
         return pd.DataFrame()
     return pd.read_csv(path, encoding="utf-8")
@@ -1350,7 +1774,7 @@ def _latest_sea_notice(df: pd.DataFrame, year: int = 2025) -> tuple[str, str]:
     names = sorted(names, key=len, reverse=True)
     name = next((n for n in names if n in msg), "공지")
 
-    time_match = re.search(r"(\\d{1,2})[:시](\\d{2})", msg)
+    time_match = re.search(r"(\d{1,2})[:시](\d{2})", msg)
     if time_match:
         time_text = f"{int(time_match.group(1)):02d}:{time_match.group(2)}"
     else:
@@ -1383,6 +1807,8 @@ if "selected_acc_meta" not in st.session_state:
     st.session_state["selected_acc_meta"] = None
 if "selected_acc_photo_path" not in st.session_state:
     st.session_state["selected_acc_photo_path"] = None
+if "selected_acc_year" not in st.session_state:
+    st.session_state["selected_acc_year"] = None
 if "selected_rockfall_meta" not in st.session_state:
     st.session_state["selected_rockfall_meta"] = None
 if "selected_rockfall_photo_path" not in st.session_state:
@@ -1416,19 +1842,27 @@ def _row_to_address(df: pd.DataFrame, row: pd.Series) -> str:
     return ""
 
 
+def _address_candidates(address: str) -> set[str]:
+    base = _norm_text(address)
+    if not base:
+        return set()
+    keys = {base}
+    keys.add(base.replace("경상북도", "").replace("경북", ""))
+    keys.add(base.replace("울릉군", "").replace("울릉", ""))
+    keys.add(base.replace("경상북도", "").replace("울릉군", ""))
+    keys.add(base.replace("경북", "").replace("울릉", ""))
+    return {k for k in keys if k}
+
+
 @st.cache_data(show_spinner=False)
 def find_accident_photo_by_address(address: str):
-    """acc_pic 폴더에서 '주소.JPG' 규칙으로 저장된 사진을 찾음.
-
-    - 파일명 비교 시 공백/특수문자는 제거하고 비교
-    - 확장자는 .JPG/.jpg/.jpeg/.png/.webp 모두 허용
-    """
+    """acc_pic 폴더에서 '주소.JPG' 규칙으로 저장된 사진을 찾음."""
     acc_dir = Path(__file__).parent / "acc_pic"
     if not acc_dir.exists() or not acc_dir.is_dir():
         return None
 
-    target = _norm_text(address)
-    if not target:
+    targets = _address_candidates(address)
+    if not targets:
         return None
 
     exts = {".jpg", ".jpeg", ".png", ".webp"}
@@ -1438,7 +1872,8 @@ def find_accident_photo_by_address(address: str):
             continue
         if p.suffix.lower() not in exts:
             continue
-        if _norm_text(p.stem) == target:
+        stem_key = _norm_text(p.stem)
+        if any(stem_key == t for t in targets):
             return p
 
     # 완전 일치가 없으면 포함 매칭(옵션)
@@ -1447,7 +1882,8 @@ def find_accident_photo_by_address(address: str):
             continue
         if p.suffix.lower() not in exts:
             continue
-        if target and target in _norm_text(p.stem):
+        stem_key = _norm_text(p.stem)
+        if any(t and (t in stem_key or stem_key in t) for t in targets):
             return p
 
     return None
@@ -1475,6 +1911,57 @@ def _find_rockfall_photo(address: str | Path | None):
             return p
 
     return None
+
+
+def _set_selected_accident(df_acc: pd.DataFrame, idx: int):
+    if df_acc.empty or idx not in df_acc.index:
+        return
+
+    row = df_acc.loc[idx]
+
+    # 1. 연도 추출
+    year_val = 2025
+    if "year" in df_acc.columns:
+        try:
+            year_val = int(row.get("year"))
+        except:
+            year_val = 2025
+
+    # 2. 주소 추출
+    addr = _row_to_address(df_acc, row)
+
+    # 3. 상세 정보 및 타입 추출
+    detail_txt = str(row.get("detail", "")).strip()
+    if detail_txt.lower() in ["nan", "none"]:
+        detail_txt = ""
+
+    acc_type = "미상"
+    for c in ["type", "accident_type", "사고유형", "사고_type"]:
+        if c in df_acc.columns:
+            val = str(row.get(c, "")).strip()
+            if val and val.lower() not in ["nan", "none"]:
+                acc_type = val
+                break
+
+    # 4. 사진 찾기 (연도 제한 없이 무조건 시도)
+    photo = find_accident_photo_by_address(addr)
+
+    # 5. 텍스트 구성
+    detail_label = detail_txt if detail_txt else "(없음)"
+    addr_label = addr if addr else "(없음)"
+    summary = f"{detail_label} 인근, {acc_type} 발생. 주의 요망."
+
+    # 6. 세션 상태 업데이트 (교통사고 정보 입력)
+    st.session_state["selected_acc_meta"] = (
+        f"연도: {year_val}\n위치: {detail_label}\n유형: {acc_type}\n주소: {addr_label}\n{summary}"
+    )
+    st.session_state["selected_acc_photo_path"] = str(photo) if photo else None
+    st.session_state["selected_acc_year"] = year_val
+
+    # [핵심] 낙석 및 버스 정보는 '반드시' 지워야 화면이 전환됨
+    st.session_state["selected_rockfall_meta"] = None
+    st.session_state["selected_rockfall_photo_path"] = None
+    st.session_state["selected_bus_meta"] = None
 
 
 # -----------------------------
@@ -1511,261 +1998,32 @@ if isinstance(_notice_text, str) and _notice_text.startswith(_prefix):
 else:
     _notice_html = _notice_text
 
+logo_path = Path(__file__).parent / "logo.svg"
+logo_html = ""
+if logo_path.exists():
+    try:
+        svg_bytes = logo_path.read_bytes()
+        svg_b64 = base64.b64encode(svg_bytes).decode("ascii")
+        logo_html = (
+            f'<img src="data:image/svg+xml;base64,{svg_b64}" alt="울릉군 마크" />'
+        )
+    except Exception:
+        logo_html = ""
+st.markdown(
+    f"""
+    <div class="dashboard-title">
+        {logo_html}
+        <div class="title-text">울릉도 데이터 대시보드</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+st.write("")
 st.markdown(
     f'<div class="notice-pill">{_notice_html}</div>',
     unsafe_allow_html=True,
 )
 st.write("")  # 약간의 여백
-
-# =============================
-# Row 1: (좌) 사진+설명 / (우) 지도+탭
-# =============================
-
-# 상단 2개 카드(좌/우) 영역 높이 고정
-TOP_CARD_H = 600  # 전체 카드 높이(px)
-PHOTO_H = 280  # 사진 영역 높이(px)
-MAP_H = 360  # 지도 영역 높이(px)
-
-left, right = st.columns([1, 2.2], gap="large")
-
-with left:
-    with st.container(border=True, height=TOP_CARD_H):
-        st.markdown(
-            '<div class="card-title">사고 장소 사진</div>', unsafe_allow_html=True
-        )
-
-        selected_rockfall_photo = st.session_state.get("selected_rockfall_photo_path")
-        selected_rockfall_meta = st.session_state.get("selected_rockfall_meta")
-        selected_acc_photo = st.session_state.get("selected_acc_photo_path")
-        selected_acc_meta = st.session_state.get("selected_acc_meta")
-        selected_bus_meta = st.session_state.get("selected_bus_meta")
-
-        # 사진 영역 높이 고정(사진이 크거나 없을 때도 레이아웃 유지)
-        with st.container(height=PHOTO_H):
-            if selected_rockfall_photo:
-                try:
-                    st.image(selected_rockfall_photo, width="stretch")
-                except Exception:
-                    st.warning("이미지를 불러오지 못했어.")
-            elif selected_acc_photo:
-                try:
-                    st.image(selected_acc_photo, width="stretch")
-                except Exception:
-                    st.warning("이미지를 불러오지 못했어.")
-            else:
-                st.info(
-                    """
-- 우측 지도에서 사고 지점을 클릭하면, 선택된 사고의 정보가 갱신됩니다.
-- 관련 사진이 등록된 사고의 경우, 본 영역에 사고 장소 사진이 표시됩니다.
-- 사진이 등록되지 않은 사고는 사진이 표시되지 않을 수 있습니다.
-- 지도를 확대/축소하여 표시된 지점을 확인하시기 바랍니다.
-                    """.strip()
-                )
-
-        st.write("")
-        st.markdown('<div class="card-title">자세히 보기</div>', unsafe_allow_html=True)
-
-        # 선택된 사고 정보는 여기(설명 텍스트)에 표시
-        if selected_bus_meta:
-            st.markdown(str(selected_bus_meta).replace("\n", "  \n"))
-        elif selected_rockfall_meta:
-            st.markdown(str(selected_rockfall_meta).replace("\n", "  \n"))
-        elif selected_acc_meta:
-            st.markdown(str(selected_acc_meta).replace("\n", "  \n"))
-        else:
-            st.markdown(
-                """
-- 우측 지도에서 사고 지점을 클릭하면 본 영역에 사고 유형 및 주소가 표시됩니다.
-- 관련 사진이 등록된 사고의 경우, 상단에 사고 장소 사진이 함께 표시됩니다.
-- 지도를 확대/축소하여 표시된 지점을 확인하시기 바랍니다.
-                """.strip()
-            )
-
-with right:
-    with st.container(border=True, height=TOP_CARD_H):
-        st.markdown('<div class="card-title">울릉군 지도</div>', unsafe_allow_html=True)
-        st.caption("2025년 울릉군 위치 데이터 기반")
-
-        # 지도 상단 탭(맵 카드 안에서만 탭)
-        t1, t2, t3 = st.tabs(["교통사고 지점", "낙석 발생 지점", "버스 실시간 상황"])
-
-        with t1:
-            st.caption("울릉군 교통사고 지점")
-
-            map_state = render_ulleung_folium_map(kind="accident", height=MAP_H)
-
-            # 클릭 이벤트 처리(streamlit-folium 설치된 경우에만 동작)
-            if isinstance(map_state, dict):
-                # 클릭 좌표로 가장 가까운 마커(=CSV 행)를 찾음
-                last = map_state.get("last_object_clicked")
-                idx = None
-
-                acc_points_meta = st.session_state.get("acc_points_meta", [])
-                if (
-                    isinstance(last, dict)
-                    and "lat" in last
-                    and "lng" in last
-                    and acc_points_meta
-                ):
-                    lat0 = float(last["lat"])
-                    lon0 = float(last["lng"])
-
-                    best_idx = None
-                    best_d = None
-                    for p in acc_points_meta:
-                        d = abs(float(p["lat"]) - lat0) + abs(float(p["lon"]) - lon0)
-                        if best_d is None or d < best_d:
-                            best_d = d
-                            best_idx = int(p["idx"])
-
-                    # 완전 근접한 경우만 채택(원하면 임계값 조절)
-                    if best_d is not None and best_d < 1e-5:
-                        idx = best_idx
-
-                df_acc = load_accidents_csv()
-
-                acc_type = "미상"
-                addr = ""
-                detail_txt = ""
-
-                if idx is not None and (not df_acc.empty) and (idx in df_acc.index):
-                    row = df_acc.loc[idx]
-                    addr = _row_to_address(df_acc, row)
-                    if "detail" in df_acc.columns:
-                        v = row.get("detail", None)
-                        if v is not None:
-                            s = str(v).strip()
-                            if s and s.lower() not in ["nan", "none"]:
-                                detail_txt = s
-
-                    # 사고 유형 컬럼 후보
-                    type_col_candidates = [
-                        c
-                        for c in ["type", "accident_type", "사고유형", "사고_type"]
-                        if c in df_acc.columns
-                    ]
-                    type_col = type_col_candidates[0] if type_col_candidates else None
-                    if type_col is not None:
-                        v = row.get(type_col, None)
-                        if v is not None:
-                            s = str(v).strip()
-                            if s and s.lower() not in ["nan", "none"]:
-                                acc_type = s
-
-                # 실제 클릭이 있었고, 클릭 좌표로 유효한 idx를 찾았을 때만 상태 업데이트
-                if last is not None and idx is not None:
-                    # 주소로 사진 찾기
-                    photo = find_accident_photo_by_address(addr)
-
-                    # 설명 영역에 표시될 텍스트
-                    detail_label = detail_txt if detail_txt else "(없음)"
-                    addr_label = addr if addr else "(없음)"
-
-                    summary_parts = []
-                    if detail_txt:
-                        summary_parts.append(f"{detail_txt} 지점에서")
-                    else:
-                        summary_parts.append("현장에서")
-                    if acc_type != "미상":
-                        summary_parts.append(f"{acc_type} 발생,")
-                    else:
-                        summary_parts.append("사고 발생,")
-                    summary_parts.append("통행 주의")
-                    summary = " ".join(summary_parts)
-
-                    st.session_state["selected_acc_meta"] = "\n".join(
-                        [
-                            f"상세 위치 : {detail_label}",
-                            f"사고 유형 : {acc_type}",
-                            f"주소 : {addr_label}",
-                            f"요약(예시) : {summary}",
-                        ]
-                    )
-
-                    st.session_state["selected_acc_photo_path"] = (
-                        str(photo) if photo else None
-                    )
-                    st.session_state["selected_bus_meta"] = None
-
-        with t2:
-            st.caption("울릉군 낙석 발생 지점")
-            rock_map_state = render_ulleung_folium_map(kind="rockfall", height=MAP_H)
-            if isinstance(rock_map_state, dict):
-                last = rock_map_state.get("last_object_clicked")
-                rock_meta = st.session_state.get("rockfall_points_meta", [])
-                if (
-                    isinstance(last, dict)
-                    and "lat" in last
-                    and "lng" in last
-                    and rock_meta
-                ):
-                    lat0 = float(last["lat"])
-                    lon0 = float(last["lng"])
-                    best = None
-                    best_d = None
-                    for p in rock_meta:
-                        d = abs(float(p["lat"]) - lat0) + abs(float(p["lon"]) - lon0)
-                        if best_d is None or d < best_d:
-                            best_d = d
-                            best = p
-                    if best is not None and best_d is not None and best_d < 1e-5:
-                        name = best.get("name", "")
-                        photo = best.get("photo", None)
-                        location_label = name if name else "(없음)"
-                        notice_line = "통제 공지(예시) : **시 **분부터 **시 **분까지 도로 통제"
-                        st.session_state["selected_rockfall_meta"] = "\n".join(
-                            [
-                                f"낙석 발생 위치 : {location_label}",
-                                notice_line,
-                            ]
-                        )
-                        st.session_state["selected_rockfall_photo_path"] = (
-                            str(photo) if photo else None
-                        )
-                        st.session_state["selected_bus_meta"] = None
-
-        with t3:
-            st.caption("울릉군 버스 노선/정류장")
-            bus_map_state = render_ulleung_folium_map(kind="bus", height=MAP_H)
-            if isinstance(bus_map_state, dict):
-                last = bus_map_state.get("last_object_clicked")
-                bus_meta = st.session_state.get("bus_stops_meta", [])
-                if (
-                    isinstance(last, dict)
-                    and "lat" in last
-                    and "lng" in last
-                    and bus_meta
-                ):
-                    lat0 = float(last["lat"])
-                    lon0 = float(last["lng"])
-                    best = None
-                    best_d = None
-                    for p in bus_meta:
-                        d = abs(float(p["lat"]) - lat0) + abs(float(p["lon"]) - lon0)
-                        if best_d is None or d < best_d:
-                            best_d = d
-                            best = p
-                    if best is not None and best_d is not None and best_d < 1e-5:
-                        name = best.get("name", "")
-                        routes_txt = (
-                            ", ".join(best.get("routes", []))
-                            if best.get("routes")
-                            else "노선 정보 없음"
-                        )
-                        st.session_state["selected_bus_meta"] = "\n".join(
-                            [
-                                f"정류장 : {name}",
-                                f"경유 노선 : {routes_txt}",
-                            ]
-                        )
-                        # 다른 섹션 선택 해제
-                        st.session_state["selected_rockfall_meta"] = None
-                        st.session_state["selected_rockfall_photo_path"] = None
-                        st.session_state["selected_acc_meta"] = None
-                        st.session_state["selected_acc_photo_path"] = None
-
-        st.caption("※ 확대해서 확인해보세요")
-
 
 # =============================
 # Row 2: Layer 2개 (해상공지 / 도로통제)
@@ -1777,27 +2035,37 @@ sms_counts, sms_total, sms_breakdown = _summarize_sms_notice_counts(
 sea_latest_label, sea_latest_text = _latest_sea_notice(load_sms_raw(), year=2025)
 
 
+# [수정] 백분율 계산 로직 개선
 def _pct(count: int, total: int) -> int:
     if total <= 0:
         return 0
     return int(round(count / total * 100))
 
-
+# 1. 각 항목의 건수 가져오기
 sea_arrive = sms_counts["입항"]
 sea_depart = sms_counts["출항"]
 sea_control = sms_counts["운항통제"]
 sea_cancel = sms_counts["결항"]
 sea_change = sms_counts["시간변경"]
-sea_total = sms_total
-sea_arrive_pct = _pct(sea_arrive, sea_total)
-sea_depart_pct = _pct(sea_depart, sea_total)
-sea_control_pct = _pct(sea_control, sea_total)
-sea_cancel_pct = _pct(sea_cancel, sea_total)
-sea_change_pct = _pct(sea_change, sea_total)
+
+# [수정] 막대 그래프의 '시각적 스케일'을 위해 전체 합(Total)이 아닌 최댓값(Max)을 기준으로 100%를 잡음
+sea_max_val = max(sea_arrive, sea_depart, sea_control, sea_cancel, sea_change)
+if sea_max_val == 0:
+    sea_max_val = 1
+
+sea_arrive_pct = _pct(sea_arrive, sea_max_val)
+sea_depart_pct = _pct(sea_depart, sea_max_val)
+sea_control_pct = _pct(sea_control, sea_max_val)
+sea_cancel_pct = _pct(sea_cancel, sea_max_val)
+sea_change_pct = _pct(sea_change, sea_max_val)
+
+# 2. 내부 분할(선박/사람) 비율은 해당 항목의 합계를 기준으로 계산 (이건 기존 유지)
 sea_arrive_ship = sms_breakdown["입항"]["선박"]
 sea_arrive_people = sms_breakdown["입항"]["사람"]
 sea_depart_ship = sms_breakdown["출항"]["선박"]
 sea_depart_people = sms_breakdown["출항"]["사람"]
+
+# 내부 세그먼트 비율 계산
 sea_arrive_ship_pct = _pct(sea_arrive_ship, sea_arrive)
 sea_arrive_people_pct = 100 - sea_arrive_ship_pct if sea_arrive > 0 else 0
 sea_depart_ship_pct = _pct(sea_depart_ship, sea_depart)
@@ -1805,69 +2073,137 @@ sea_depart_people_pct = 100 - sea_depart_ship_pct if sea_depart > 0 else 0
 
 st.write("")
 c1, c2 = st.columns(2, gap="large")
-ROW2_CARD_H = 350
+
+# [수정] 카드 높이 조절
+ROW2_CARD_H = 420
 
 with c1:
     with st.container(border=True, height=ROW2_CARD_H):
         if show_sea_notice:
-            st.markdown(
-                f"""
+            html = "\n".join(
+                line.lstrip()
+                for line in textwrap.dedent(
+                    f"""
 <div class="r2-card">
   <div class="r2-head">
     <div class="r2-title">해상 공지</div>
     <div class="r2-date">2025년 기준</div>
   </div>
-  <div class="sea-latest">
-    <div class="sea-pill">{sea_latest_label}</div>
-    <div class="sea-latest-text">{sea_latest_text}</div>
+
+  <div class="sea-section">
+    <div class="sea-section-title">최신 공지</div>
+    <div class="sea-latest">
+      <div class="sea-pill">{sea_latest_label}</div>
+      <div class="sea-latest-text">{sea_latest_text}</div>
+    </div>
   </div>
-  <div class="sea-bars">
-    <div class="bar-row">
-      <div class="bar-label">입항 <span class="bar-sub">(선박/사람)</span></div>
-      <div class="bar-track">
-        <div class="bar-fill-split" style="width:{sea_arrive_pct}%;">
-          <div class="bar-seg" style="width:{sea_arrive_ship_pct}%; background:#ff8a3d;"></div>
-          <div class="bar-seg" style="width:{sea_arrive_people_pct}%; background:#ffd3a8;"></div>
+
+  <div class="sea-section">
+    <div class="sea-section-title">통계 요약 (건수)</div>
+    <div class="sea-bars">
+      <div class="bar-row">
+        <div class="bar-label">
+          <div class="bar-label-wrap">
+            <span>입항</span>
+            <span class="bar-sub">(선박/사람)</span>
+            <details class="help-pop">
+              <summary>?</summary>
+              <div class="help-pop-body">
+                입항 알림 합계: <b>{sea_arrive:,}건</b><br/>
+                (선박: {sea_arrive_ship}, 사람: {sea_arrive_people})
+              </div>
+            </details>
+          </div>
+        </div>
+        <div class="bar-track">
+          <div class="bar-fill-split" style="width:{sea_arrive_pct}%;">
+            <div class="bar-seg" style="width:{sea_arrive_ship_pct}%; background:#ff8a3d;"></div>
+            <div class="bar-seg" style="width:{sea_arrive_people_pct}%; background:#ffd3a8;"></div>
+            <div class="bar-value-onfill">{sea_arrive:,}</div>
+          </div>
         </div>
       </div>
-      <div class="bar-value">{sea_arrive:,}</div>
-    </div>
-    <div class="bar-row">
-      <div class="bar-label">출항 <span class="bar-sub">(선박/사람)</span></div>
-      <div class="bar-track">
-        <div class="bar-fill-split" style="width:{sea_depart_pct}%;">
-          <div class="bar-seg" style="width:{sea_depart_ship_pct}%; background:#00b3a4;"></div>
-          <div class="bar-seg" style="width:{sea_depart_people_pct}%; background:#8fe3da;"></div>
+
+      <div class="bar-row">
+        <div class="bar-label">
+          <div class="bar-label-wrap">
+            <span>출항</span>
+            <span class="bar-sub">(선박/사람)</span>
+            <details class="help-pop">
+              <summary>?</summary>
+              <div class="help-pop-body">
+                출항 알림 합계: <b>{sea_depart:,}건</b><br/>
+                (선박: {sea_depart_ship}, 사람: {sea_depart_people})
+              </div>
+            </details>
+          </div>
+        </div>
+        <div class="bar-track">
+          <div class="bar-fill-split" style="width:{sea_depart_pct}%;">
+            <div class="bar-seg" style="width:{sea_depart_ship_pct}%; background:#00b3a4;"></div>
+            <div class="bar-seg" style="width:{sea_depart_people_pct}%; background:#8fe3da;"></div>
+            <div class="bar-value-onfill">{sea_depart:,}</div>
+          </div>
         </div>
       </div>
-      <div class="bar-value">{sea_depart:,}</div>
-    </div>
-    <div class="bar-row">
-      <div class="bar-label">운항통제</div>
-      <div class="bar-track">
-        <div class="bar-fill" style="width:{sea_control_pct}%; background:#5b2bff;"></div>
+
+      <div class="bar-row">
+        <div class="bar-label">
+          <div class="bar-label-wrap">
+            <span>운항통제</span>
+            <details class="help-pop">
+              <summary>?</summary>
+              <div class="help-pop-body">기상 악화 등으로 통제된 알림 수입니다.</div>
+            </details>
+          </div>
+        </div>
+        <div class="bar-track">
+          <div class="bar-fill" style="width:{sea_control_pct}%; background:#5b2bff;">
+            <div class="bar-value-onfill">{sea_control:,}</div>
+          </div>
+        </div>
       </div>
-      <div class="bar-value">{sea_control:,}</div>
-    </div>
-    <div class="bar-row">
-      <div class="bar-label">결항</div>
-      <div class="bar-track">
-        <div class="bar-fill" style="width:{sea_cancel_pct}%; background:#e24a4a;"></div>
+
+      <div class="bar-row">
+        <div class="bar-label">
+          <div class="bar-label-wrap">
+            <span>결항</span>
+            <details class="help-pop">
+              <summary>?</summary>
+              <div class="help-pop-body">기상 또는 점검 사유로 취소된 알림 수입니다.</div>
+            </details>
+          </div>
+        </div>
+        <div class="bar-track">
+          <div class="bar-fill" style="width:{sea_cancel_pct}%; background:#e24a4a;">
+            <div class="bar-value-onfill">{sea_cancel:,}</div>
+          </div>
+        </div>
       </div>
-      <div class="bar-value">{sea_cancel:,}</div>
-    </div>
-    <div class="bar-row">
-      <div class="bar-label">시간변경</div>
-      <div class="bar-track">
-        <div class="bar-fill" style="width:{sea_change_pct}%; background:#7b61ff;"></div>
+
+      <div class="bar-row">
+        <div class="bar-label">
+          <div class="bar-label-wrap">
+            <span>시간변경</span>
+            <details class="help-pop">
+              <summary>?</summary>
+              <div class="help-pop-body">출항/입항 시간이 변경된 알림 수입니다.</div>
+            </details>
+          </div>
+        </div>
+        <div class="bar-track">
+          <div class="bar-fill" style="width:{sea_change_pct}%; background:#7b61ff;">
+            <div class="bar-value-onfill">{sea_change:,}</div>
+          </div>
+        </div>
       </div>
-      <div class="bar-value">{sea_change:,}</div>
     </div>
   </div>
 </div>
-                """,
-                unsafe_allow_html=True,
+                    """
+                ).splitlines()
             )
+            st.markdown(html, unsafe_allow_html=True)
         else:
             st.caption("사이드바에서 해상공지 레이어가 꺼져있음")
 
@@ -1918,37 +2254,318 @@ with c2:
         else:
             st.caption("사이드바에서 도로통제 레이어가 꺼져있음")
 
+st.write("")
+
 # =============================
-# Row 3: 그래프 3개
+# Row 1: (탭 내 전환형) 목록 보기 vs 지도 보기
+# =============================
+
+# 상태 초기화: 기본은 'list' 모드
+if "view_mode" not in st.session_state:
+    st.session_state["view_mode"] = "list"
+
+# 상단 2개 카드(좌/우) 영역 높이 고정
+TOP_CARD_H = 600  # 전체 카드 높이(px)
+PHOTO_H = 280  # 사진 영역 높이(px)
+MAP_H = 360  # 지도 영역 높이(px)
+
+with st.container(border=True, height=TOP_CARD_H):
+    st.markdown('<div class="card-title">울릉군 지도</div>', unsafe_allow_html=True)
+    st.caption("2019-2025년 울릉군 위치 데이터 기반")
+
+    # 지도 상단 탭
+    t1, t2, t3 = st.tabs(["버스 실시간 상황", "교통사고 지점", "낙석 발생 지점"])
+
+    def _render_photo_detail_panel(key_suffix: str):
+        with st.container(border=True, height=TOP_CARD_H):
+            st.markdown('<div class="card-title">사고 장소 사진</div>', unsafe_allow_html=True)
+
+            sel_rock_photo = st.session_state.get("selected_rockfall_photo_path")
+            sel_acc_photo = st.session_state.get("selected_acc_photo_path")
+            sel_acc_meta = st.session_state.get("selected_acc_meta")
+            sel_rock_meta = st.session_state.get("selected_rockfall_meta")
+            sel_bus_meta = st.session_state.get("selected_bus_meta")
+
+            with st.container(height=PHOTO_H):
+                image_loaded = False
+                if sel_rock_photo:
+                    try:
+                        path_str = str(sel_rock_photo)
+                        if os.path.isfile(path_str):
+                            img = Image.open(path_str)
+                            st.image(img, width="stretch")
+                            image_loaded = True
+                    except Exception:
+                        pass
+                elif sel_acc_photo and not image_loaded:
+                    try:
+                        path_str = str(sel_acc_photo)
+                        if os.path.isfile(path_str):
+                            img = Image.open(path_str)
+                            st.image(img, width="stretch")
+                            image_loaded = True
+                    except Exception:
+                        pass
+
+                if not image_loaded and (sel_acc_meta or sel_rock_meta):
+                    st.markdown(
+                        """
+                        <div class="photo-placeholder">등록된 현장 사진이 없습니다.<br/><span style="font-size:0.8rem;">(지도상의 위치를 참고해주세요)</span></div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                elif not image_loaded and not sel_acc_meta and not sel_rock_meta:
+                    st.info(
+                        "- 우측 지도에서 사고 지점을 클릭하면, 선택된 사고의 정보가 갱신됩니다.\n"
+                        "- 관련 사진이 등록된 사고의 경우, 본 영역에 사고 장소 사진이 표시됩니다."
+                    )
+
+            st.write("")
+            if image_loaded and (sel_rock_photo or sel_acc_photo):
+                selected_photo_path = sel_rock_photo or sel_acc_photo
+
+                @st.dialog("사진 확대")
+                def _show_photo_dialog(photo_path: str):
+                    try:
+                        st.image(str(photo_path), width="content")
+                    except Exception:
+                        st.warning("이미지를 불러오지 못했어.")
+
+                if st.button("사진 확대 보기", key=f"photo_zoom_{key_suffix}"):
+                    _show_photo_dialog(selected_photo_path)
+
+            st.write("")
+            st.markdown('<div class="card-title">자세히 보기</div>', unsafe_allow_html=True)
+            if sel_rock_meta:
+                st.markdown(str(sel_rock_meta).replace("\n", "  \n"))
+            elif sel_bus_meta:
+                st.markdown(str(sel_bus_meta).replace("\n", "  \n"))
+            elif sel_acc_meta:
+                st.markdown(str(sel_acc_meta).replace("\n", "  \n"))
+            else:
+                st.markdown("- 지도에서 마커를 클릭하면 상세 정보가 이곳에 표시됩니다.")
+
+    # [탭 1] 버스
+    with t1:
+        left_main, right_detail = st.columns([2.2, 1], gap="large")
+        with left_main:
+            st.caption("울릉군 버스 노선/정류장")
+            bus_map_state = render_ulleung_folium_map(kind="bus", height=MAP_H)
+            if isinstance(bus_map_state, dict):
+                last = bus_map_state.get("last_object_clicked")
+                bus_meta = st.session_state.get("bus_stops_meta", [])
+                if isinstance(last, dict) and "lat" in last and "lng" in last and bus_meta:
+                    lat0 = float(last["lat"])
+                    lon0 = float(last["lng"])
+                    best = None
+                    best_d = None
+                    for p in bus_meta:
+                        d = abs(float(p["lat"]) - lat0) + abs(float(p["lon"]) - lon0)
+                        if best_d is None or d < best_d:
+                            best_d = d
+                            best = p
+                    if best is not None and best_d is not None and best_d < 0.002:
+                        st.session_state["selected_acc_meta"] = None
+                        st.session_state["selected_acc_photo_path"] = None
+                        st.session_state["selected_rockfall_meta"] = None
+                        st.session_state["selected_rockfall_photo_path"] = None
+                        name = best.get("name", "")
+                        routes_txt = (
+                            ", ".join(best.get("routes", []))
+                            if best.get("routes")
+                            else "노선 정보 없음"
+                        )
+                        st.session_state["selected_bus_meta"] = (
+                            f"정류장 : {name}\n경유 노선 : {routes_txt}"
+                        )
+            st.caption(f"조회기준: {datetime.now():%Y-%m-%d %H:%M}")
+
+        with right_detail:
+            routes_defs = {r["id"]: r for r in _bus_route_defs()}
+            route_22 = routes_defs.get("22")
+            route_3 = routes_defs.get("3")
+
+            def _route_dir_label(route):
+                if not route or not route.get("stops"):
+                    return "상행 -> (정보 없음), 하행 -> (정보 없음)"
+                up = route["stops"][0]
+                down = route["stops"][-1]
+                return f"상행 -> {up}, 하행 -> {down}"
+
+            with st.container(border=True, height=TOP_CARD_H):
+                st.markdown('<div class="card-title">버스 실시간 정보</div>', unsafe_allow_html=True)
+                st.markdown(
+                    f"""
+<div style="padding:10px 12px; border:1px solid #e8ebf2; border-radius:12px; margin-bottom:10px; background:#f8f9fc;">
+  <div style="font-weight:700;">22노선</div>
+  <div style="color:#444; font-size:0.9rem;">{_route_dir_label(route_22)}</div>
+</div>
+<div style="padding:10px 12px; border:1px solid #e8ebf2; border-radius:12px; margin-bottom:10px; background:#f8f9fc;">
+  <div style="font-weight:700;">3노선</div>
+  <div style="color:#444; font-size:0.9rem;">{_route_dir_label(route_3)}</div>
+</div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                st.markdown('<div class="card-title">정류장 상세</div>', unsafe_allow_html=True)
+                sel_bus_meta = st.session_state.get("selected_bus_meta")
+                if sel_bus_meta:
+                    st.markdown(str(sel_bus_meta).replace("\n", "  \n"))
+                else:
+                    st.markdown("- 지도에서 정류장을 클릭하면 상세 정보가 표시됩니다.")
+
+    # [탭 2] 교통사고 (탭 안에서 목록/지도 전환)
+    with t2:
+        left_main, right_detail = st.columns([2.2, 1], gap="large")
+        with left_main:
+            top_left, top_right = st.columns([4, 1])
+            with top_left:
+                if st.session_state["view_mode"] == "list":
+                    st.caption("발생한 사고 목록입니다. 위치 확인 버튼을 누르면 지도로 이동합니다.")
+                else:
+                    st.caption("울릉군 교통사고 지점")
+            with top_right:
+                if st.session_state["view_mode"] == "list":
+                    if st.button("🗺️ 지도에서 보기", use_container_width=True, type="primary"):
+                        st.session_state["view_mode"] = "map"
+                        st.rerun()
+                else:
+                    if st.button("⬅ 목록으로", use_container_width=True):
+                        st.session_state["view_mode"] = "list"
+                        st.rerun()
+
+            df_acc_list = load_accidents_csv(_accident_files_signature())
+            if df_acc_list.empty:
+                st.info("표시할 사고 데이터가 없습니다.")
+            else:
+                if st.session_state["view_mode"] == "list":
+                    with st.container(height=TOP_CARD_H - 120, border=True):
+                        for idx, row in df_acc_list.head(50).iterrows():
+                            year_val = row.get("year", 2025)
+                            acc_type = row.get("type", "미상")
+                            if pd.isna(acc_type):
+                                acc_type = "미상"
+
+                            addr = _row_to_address(df_acc_list, row)
+                            detail = str(row.get("detail", "")).strip()
+                            if detail == "nan":
+                                detail = ""
+
+                            display_title = detail if detail else addr
+                            if not display_title:
+                                display_title = "위치 정보 없음"
+
+                            with st.container(border=True):
+                                c_info, c_btn = st.columns([4, 1])
+                                with c_info:
+                                    st.markdown(f"**{display_title}**")
+                                    st.caption(f"{year_val}년 | {acc_type}")
+                                    st.markdown(
+                                        f"<div style='color:#666; font-size:0.85rem;'>{addr}</div>",
+                                        unsafe_allow_html=True,
+                                    )
+                                with c_btn:
+                                    st.write("")
+                                    if st.button(
+                                        "위치 확인 >",
+                                        key=f"btn_go_map_{idx}",
+                                        use_container_width=True,
+                                    ):
+                                        _set_selected_accident(df_acc_list, idx)
+                                        st.session_state["view_mode"] = "map"
+                                        st.rerun()
+                else:
+                    df_acc = df_acc_list
+                    year_filter = None
+                    if "year" in df_acc.columns and not df_acc["year"].dropna().empty:
+                        years = sorted({int(y) for y in df_acc["year"].dropna().unique()})
+                        idx_2025 = years.index(2025) + 1 if 2025 in years else 0
+                        options = ["전체"] + [str(y) for y in years]
+                        selected_year_label = st.selectbox("연도 선택", options, index=idx_2025)
+                        if selected_year_label != "전체":
+                            year_filter = int(selected_year_label)
+                    df_view = df_acc
+                    if year_filter is not None:
+                        df_view = df_acc[df_acc["year"] == year_filter]
+
+                    map_state = render_ulleung_folium_map(
+                        kind="accident",
+                        height=MAP_H,
+                        accident_df=df_view,
+                    )
+
+                    if isinstance(map_state, dict):
+                        last = map_state.get("last_object_clicked")
+                        if isinstance(last, dict) and "lat" in last and "lng" in last:
+                            lat0 = float(last["lat"])
+                            lon0 = float(last["lng"])
+                            best_idx = None
+                            best_d = None
+                            for i in df_view.index:
+                                row_lat = df_view.at[i, "latitude"]
+                                row_lon = df_view.at[i, "longitude"]
+                                d = abs(row_lat - lat0) + abs(row_lon - lon0)
+                                if best_d is None or d < best_d:
+                                    best_d = d
+                                    best_idx = i
+                            if best_d is not None and best_d < 0.002:
+                                st.session_state["selected_rockfall_meta"] = None
+                                st.session_state["selected_rockfall_photo_path"] = None
+                                st.session_state["selected_bus_meta"] = None
+                                _set_selected_accident(df_acc, best_idx)
+
+        with right_detail:
+            _render_photo_detail_panel("accident")
+
+    # [탭 3] 낙석
+    with t3:
+        left_main, right_detail = st.columns([2.2, 1], gap="large")
+        with left_main:
+            st.caption("울릉군 낙석 발생 지점")
+            rock_map_state = render_ulleung_folium_map(kind="rockfall", height=MAP_H)
+            if isinstance(rock_map_state, dict):
+                last = rock_map_state.get("last_object_clicked")
+                rock_meta = st.session_state.get("rockfall_points_meta", [])
+                if isinstance(last, dict) and "lat" in last and "lng" in last and rock_meta:
+                    lat0 = float(last["lat"])
+                    lon0 = float(last["lng"])
+                    best = None
+                    best_d = None
+                    for p in rock_meta:
+                        d = abs(float(p["lat"]) - lat0) + abs(float(p["lon"]) - lon0)
+                        if best_d is None or d < best_d:
+                            best_d = d
+                            best = p
+                    if best is not None and best_d is not None and best_d < 0.002:
+                        st.session_state["selected_acc_meta"] = None
+                        st.session_state["selected_acc_photo_path"] = None
+                        st.session_state["selected_acc_year"] = None
+                        st.session_state["selected_bus_meta"] = None
+                        name = best.get("name", "")
+                        photo = best.get("photo", None)
+                        st.session_state["selected_rockfall_meta"] = (
+                            f"낙석 발생 위치 : {name if name else '(없음)'}\n통제 공지 : 복구 작업 중"
+                        )
+                        st.session_state["selected_rockfall_photo_path"] = (
+                            str(photo) if photo else None
+                        )
+
+        with right_detail:
+            _render_photo_detail_panel("rockfall")
+# =============================
+# Row 3: 그래프 3개 (Vega-Lite + 상세 분석 텍스트)
 # =============================
 if show_graphs:
 
     st.write("")
     g1, g2, g3 = st.columns(3, gap="large")
-    GRAPH_CARD_H = 600
-    GRAPH_CHART_H = 320
-    GRAPH_FIG_W = 5.0
-    GRAPH_FIG_H = 3.2
-    GRAPH_FIG_W_G2 = 7.0
-    GRAPH_FIG_H_G2 = 4.2
-
-    def graph_card(col, title):
-        with col:
-            with st.container(border=True, height=GRAPH_CARD_H):
-                st.markdown(
-                    f'<div class="card-title">{title}</div>', unsafe_allow_html=True
-                )
-                st.info("그래프 자리 (placeholder)")
-                st.write("")
-                st.markdown(
-                    '<div class="card-sub">설명 영역</div>', unsafe_allow_html=True
-                )
-                st.write("그래프 해석/요약/주의사항 등 들어갈 자리")
-
+    GRAPH_CARD_H = 680
+    GRAPH_CHART_H = 360
+    
     with g1:
         with st.container(border=True, height=GRAPH_CARD_H):
             st.markdown(
-                '<div class="card-title">교통단속 건수</div>',
+                '<div class="card-title">단속건수 통계</div>',
                 unsafe_allow_html=True,
             )
             df_counts = load_enforcement_counts_csv()
@@ -1980,14 +2597,16 @@ if show_graphs:
                             .size()
                             .reindex(range(1, 13), fill_value=0)
                         )
-                        fig = _plot_bar_matplotlib(
-                            summary.index.tolist(),
-                            summary.tolist(),
-                            "월",
-                            f"{year}년 월별 교통단속 건수",
-                            fig_size=(GRAPH_FIG_W, GRAPH_FIG_H),
+                        plot_df = pd.DataFrame(
+                            {"월": summary.index.tolist(), "건수": summary.tolist()}
                         )
-                        st.pyplot(fig, width="stretch")
+                        spec = _vega_bar_spec(
+                            "월",
+                            "건수",
+                            f"{year}년 월별 교통단속 건수",
+                            GRAPH_CHART_H,
+                        )
+                        st.vega_lite_chart(plot_df, spec, use_container_width=True)
                     else:
                         month = st.selectbox(
                             "월 선택",
@@ -2002,27 +2621,40 @@ if show_graphs:
                             .size()
                             .reindex(years, fill_value=0)
                         )
-                        fig = _plot_bar_matplotlib(
-                            summary.index.tolist(),
-                            summary.tolist(),
-                            "연도",
-                            f"{month}월 연도별 교통단속 건수",
-                            fig_size=(GRAPH_FIG_W, GRAPH_FIG_H),
+                        plot_df = pd.DataFrame(
+                            {"연도": summary.index.tolist(), "건수": summary.tolist()}
                         )
-                        st.pyplot(fig, width="stretch")
+                        spec = _vega_bar_spec(
+                            "연도",
+                            "건수",
+                            f"{month}월 연도별 교통단속 건수",
+                            GRAPH_CHART_H,
+                        )
+                        st.vega_lite_chart(plot_df, spec, use_container_width=True)
             st.write("")
-            st.markdown('<div class="card-sub">설명 영역</div>', unsafe_allow_html=True)
             st.write(
-                "- 연도별 선택 시: 해당 연도의 월별 단속 건수가 막대로 표시됩니다.\n"
-                "- 월별 선택 시: 선택한 월의 연도별 단속 건수 비교가 가능합니다.\n"
-                "- 막대 높이 차이를 통해 성수/비수기의 변화 폭을 직관적으로 봅니다.\n"
-                "- 기준선이 없으므로, 변화 추이는 막대 간 상대 비교로 해석합니다."
+                "교통단속 통계 결과\n\n"
+                "- 연도·월별 교통 단속 발생 특성\n"
+                "연도별 교통 단속 건수는 2023년이 가장 많고, 그다음이 2021년, 2024년 순으로 나타났다.\n"
+                "월별로는 8월, 5월, 7월 순으로 단속 건수가 많아, 성수기 기간에 단속이 집중되는 경향이 확인된다.\n"
+                "- 가장 많이 단속된 법 조항: 이륜차 안전모 착용 의무\n"
+                "전체 단속 중 도로교통법 제50조 제3항(이륜차 안전모 착용 의무)이 65건으로 가장 높은 비중을 차지하였다.\n"
+                "안전모 미착용, 턱끈 미고정, 동승자 미착용 등 이륜차 이용 과정에서 반복적으로 발생하는 위반 유형이 주요 단속 대상이었다.\n"
+                "- 차량 이동 관련 주요 단속 유형\n"
+                "제54조 제1항(사고 발생 시 조치의무 위반)과 제48조 제1항(안전운전의무 위반)이 각각 41건, 39건으로 나타나,\n"
+                "차량 이동이 많아지는 시기에 운전자 준수 의무 위반에 대한 단속 비중이 높아지는 구조가 확인된다.\n"
+                "- 성수기 단속 집중 현상\n"
+                "평균 대비 단속 건수가 높은 성수기 달은 4~8월과 10월로 나타났으며, 특히 5월과 10월에 단속 건수가 집중되었다.\n"
+                "여객 유입이 많은 5월에는 이륜차 관련 단속, 차량 유입이 많은 8월에는 차량 관련 단속이 상대적으로 많았다.\n"
+                "- 비수기(2월) 주정차 단속의 특징\n"
+                "2월은 전반적으로 여객·차량 이동이 적은 시기임에도 불구하고, 제73조 제2항(불법 주정차) 단속이 상대적으로 많이 발생하였다.\n"
+                "이는 겨울철 도로 여건 변화로 인해 정차·주차 질서 위반 단속 비중이 높아지는 월별 특성으로 나타난다."
             )
 
     with g2:
         with st.container(border=True, height=GRAPH_CARD_H):
             st.markdown(
-                '<div class="card-title">강수량 · 여객수</div>',
+                '<div class="card-title">강수량 및 여객수 통계</div>',
                 unsafe_allow_html=True,
             )
             monthly = load_weather_passenger_monthly()
@@ -2051,16 +2683,18 @@ if show_graphs:
                             .set_index("월")
                             .reindex(range(1, 13), fill_value=0)
                         )
-                        fig = _plot_weather_passenger(
-                            sub.index.tolist(),
-                            sub["월강수합"].tolist(),
-                            sub["월입항합"].tolist(),
-                            sub["월출항합"].tolist(),
-                            "월",
-                            f"{year}년 월별 강수량/여객수",
-                            fig_size=(GRAPH_FIG_W_G2, GRAPH_FIG_H_G2),
+                        plot_df = pd.DataFrame(
+                            {
+                                "월": sub.index.tolist(),
+                                "강수량": sub["월강수합"].tolist(),
+                                "입도": sub["월입항합"].tolist(),
+                                "출도": sub["월출항합"].tolist(),
+                            }
                         )
-                        st.pyplot(fig, width="stretch")
+                        spec = _vega_weather_passenger_spec(
+                            "월", f"{year}년 월별 강수량/여객수", GRAPH_CHART_H
+                        )
+                        st.vega_lite_chart(plot_df, spec, use_container_width=True)
                     else:
                         month = st.selectbox(
                             "월 선택",
@@ -2073,24 +2707,34 @@ if show_graphs:
                             .set_index("연")
                             .reindex(years, fill_value=0)
                         )
-                        fig = _plot_weather_passenger(
-                            sub.index.tolist(),
-                            sub["월강수합"].tolist(),
-                            sub["월입항합"].tolist(),
-                            sub["월출항합"].tolist(),
-                            "연도",
-                            f"{month}월 연도별 강수량/여객수",
-                            fig_size=(GRAPH_FIG_W_G2, GRAPH_FIG_H_G2),
+                        plot_df = pd.DataFrame(
+                            {
+                                "연도": sub.index.tolist(),
+                                "강수량": sub["월강수합"].tolist(),
+                                "입도": sub["월입항합"].tolist(),
+                                "출도": sub["월출항합"].tolist(),
+                            }
                         )
-                        st.pyplot(fig, width="stretch")
+                        spec = _vega_weather_passenger_spec(
+                            "연도", f"{month}월 연도별 강수량/여객수", GRAPH_CHART_H
+                        )
+                        st.vega_lite_chart(plot_df, spec, use_container_width=True)
             st.write("")
-            st.markdown('<div class="card-sub">설명 영역</div>', unsafe_allow_html=True)
             st.write(
-                "- 막대는 강수량 합, 선은 입도/출도 여객수 추이를 함께 보여줍니다.\n"
-                "- 연도별 선택 시: 한 해의 월별 패턴을 한 화면에서 비교합니다.\n"
-                "- 월별 선택 시: 같은 달의 연도별 변화 방향을 확인합니다.\n"
-                "- 막대와 선의 동조/역행 여부가 핵심 해석 포인트입니다."
+                "강수량 및 입도객 수 통계 결과\n\n"
+                "- 입·출도 여객수는 2021년 데이터 시작 시점을 기준으로 월별 흐름을 정렬하여 비교하였다.\n"
+                "- 봄철 수요 증가 패턴\n"
+                "3~5월 구간에서는 입·출도 여객수가 월 단위로 연속 증가하는 흐름이 확인된다. "
+                "해당 기간은 강수량이 연중 최저 수준에 해당하여, 기상 변수의 간섭이 상대적으로 적은 상태에서 "
+                "교통 수요 증가가 뚜렷하게 나타난 구간이다.\n"
+                "- 강수량 피크 구간의 방향성 변화\n"
+                "강수량이 높은 구간에서는 입도 대비 출도 여객이 상대적으로 커지며, "
+                "출도 우세(교통 흐름 역전) 패턴이 관측된다.\n"
+                "- 입도·출도 최고치 시점의 비대칭\n"
+                "입도 여객수는 8월에 정점을 기록한 뒤 감소하는 흐름이 나타나는 반면, "
+                "출도 여객수는 10월에 재상승(증가)이 뚜렷하게 나타나 정점 시점이 서로 다르게 형성된다."
             )
+
     with g3:
         with st.container(border=True, height=GRAPH_CARD_H):
             st.markdown(
@@ -2115,7 +2759,6 @@ if show_graphs:
                     key="peak_year",
                 )
                 value_col = "월입항합" if direction == "입도" else "월출항합"
-                season_map, threshold = _compute_season_map(monthly, value_col)
                 sub = (
                     monthly[monthly["연"] == year]
                     .set_index("월")
@@ -2123,55 +2766,109 @@ if show_graphs:
                 )
                 months = list(range(1, 13))
                 values = sub[value_col].tolist()
-                colors = [
-                    "#B22222" if season_map.get(m) == "성수기" else "#87CEEB"
-                    for m in months
-                ]
+                threshold = sum(values) / len(values) if values else None
 
-                fig, ax = plt.subplots(figsize=(GRAPH_FIG_W, GRAPH_FIG_H))
-                ax.bar(months, values, color=colors, alpha=0.8)
-                if threshold is not None:
-                    ax.axhline(
-                        threshold,
-                        color="gray",
-                        linestyle="--",
-                        linewidth=1.2,
-                        label=f"전체 평균 ({threshold:,.0f})",
-                    )
-                ax.set_title(
-                    f"{year}년 월별 여객 수 ({direction} 기준)",
-                    fontsize=12,
+                peak_months = {6, 7, 8}
+                plot_df = pd.DataFrame(
+                    {
+                        "월": months,
+                        "여객수": values,
+                        "구분": [
+                            (
+                                "성수기"
+                                if m in peak_months
+                                else (
+                                    "비수기(평균↑)"
+                                    if (threshold is not None and v > threshold)
+                                    else "비수기"
+                                )
+                            )
+                            for m, v in zip(months, values)
+                        ],
+                    }
                 )
-                ax.set_xlabel("월")
-                ax.set_ylabel("여객 수")
-                ax.set_xticks(months)
-                ax.grid(axis="y", linestyle="--", alpha=0.6)
+                spec = _vega_bar_color_spec(
+                    "월",
+                    "여객수",
+                    "구분",
+                    f"{year}년 월별 여객 수 ({direction} 기준)",
+                    GRAPH_CHART_H,
+                )
                 if threshold is not None:
-                    ax.legend(loc="upper right")
-                fig.tight_layout()
-                st.pyplot(fig, width="stretch")
+                    spec = {
+                        "layer": [
+                            spec,
+                            {
+                                "data": {"values": [{"label": "연평균", "value": float(threshold)}]},
+                                "mark": {
+                                    "type": "rule",
+                                    "color": "#000000",
+                                    "strokeWidth": 1.2,
+                                    "strokeDash": [6, 4],
+                                },
+                                "encoding": {
+                                    "y": {"field": "value", "type": "quantitative"},
+                                    "strokeDash": {
+                                        "field": "label",
+                                        "type": "nominal",
+                                        "scale": {"range": [[6, 4]]},
+                                        "legend": {
+                                            "orient": "top-right",
+                                            "direction": "horizontal",
+                                            "title": None,
+                                            "symbolType": "stroke",
+                                            "symbolStrokeDash": [6, 4],
+                                            "symbolStrokeWidth": 2,
+                                            "offset": 6,
+                                            "padding": 0,
+                                            "legendY": 0,
+                                            "labelFontSize": 10,
+                                        },
+                                    },
+                                    "tooltip": [
+                                        {
+                                            "field": "value",
+                                            "type": "quantitative",
+                                            "title": "연평균",
+                                            "format": ",.0f",
+                                        },
+                                    ],
+                                    "axis": None,
+                                },
+                            },
+                        ],
+                        "config": _vega_base_config(),
+                    }
+                st.vega_lite_chart(plot_df, spec, use_container_width=True)
             st.write("")
-            st.markdown('<div class="card-sub">설명 영역</div>', unsafe_allow_html=True)
             st.write(
-                "- 월별 막대 색으로 성수기/비수기를 구분해 시각화합니다.\n"
-                "- 기준선은 전체 평균이며, 평균을 넘는 달이 성수기로 표시됩니다.\n"
-                "- 입도/출도 선택에 따라 성수기 판단이 달라질 수 있습니다.\n"
-                "- 월별 변동이 큰 구간을 색 대비로 빠르게 파악합니다."
+                "입출도객 수 통계 결과\n\n"
+                "- 평균 산출 기준 및 보정 방식\n"
+                "완전한 연도인 2022~2024년 자료만을 사용해 월별 평균을 계산하였으며, "
+                "2021년과 2025년의 누락된 월은 해당 평균값으로 보정하였다. 이를 통해 출도 평균 여객 수는 "
+                "17,341명으로 산출되었다.\n"
+                "- 출도 여객 수의 계절적 분포\n"
+                "출도 여객 수는 4~8월과 10월에 평균보다 높게 나타났으며, "
+                "이 중 5월이 연중 가장 많은 출도 여객 수를 기록하였다. 평균보다 높은 달은 성수기, "
+                "낮은 달은 비수기로 구분하였다.\n"
+                "- 입도 여객 수의 분포 특징\n"
+                "입도 여객 수 역시 4~8월과 10월에 집중되었고, 출도와 동일하게 5월에 가장 많은 입도 여객 수가 발생하였다. "
+                "다만, 입도 평균 여객 수는 약 552명으로 출도 평균에 비해 현저히 낮은 수준이다.\n"
+                "- 입도·출도 규모 차이에 대한 해석\n"
+                "출도 평균 여객 수(17,341명)에 비해 입도 평균 여객 수가 크게 적은 것은, "
+                "체류 후 외부로 이동하는 수요가 상대적으로 크거나 일시적 방문 성격의 이동이 많음을 시사한다.\n"
+                "- 기상 및 관광 요인에 따른 종합 분석\n"
+                "4~10월은 겨울철 대비 해상 기상이 안정되고 파도가 낮아 선박 운항이 원활한 시기로, "
+                "여객 수 증가에 직접적인 영향을 미친 것으로 보인다. 또한 이 시기는 자연 경관과 야외 활동 여건이 좋아 "
+                "관광객 중심의 여객 수요가 집중되는 계절적 특성을 보인다."
             )
 else:
     st.write("")
     st.caption("하단 그래프는 사이드바에서 꺼져있음")
-
-# -----------------------------
-# (선택) 디버그
-# -----------------------------
-with st.expander("디버그(필터 확인)", expanded=False):
-    st.json(
-        {
-            "date_range": str(date_range),
-            "region": region,
-            "show_sea_notice": show_sea_notice,
-            "show_road_control": show_road_control,
-            "show_graphs": show_graphs,
-        }
-    )
+# =============================
+st.write("")
+st.markdown(
+    """
+---
+본 페이지는 울릉군청에서 제공하는 공개 데이터를 활용하여 제작되었습니다."""
+)
