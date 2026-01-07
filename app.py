@@ -57,7 +57,7 @@ st.markdown(
 <style>
 /* 전체 폭 여백 조정 */
 .block-container {
-  padding-top: 0.8rem;
+  padding-top: 2rem;
   padding-bottom: 2.4rem;
   max-width: 100%;
 }
@@ -78,7 +78,7 @@ st.markdown(
   display: flex;
   align-items: center;
   gap: 12px;
-  margin: 0.2rem 0 0.6rem 0;
+  margin: 0.8rem 0 0.6rem 0;
 }
 .dashboard-title img {
   width: 40px;
