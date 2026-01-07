@@ -998,56 +998,273 @@ def load_weather_passenger_monthly() -> pd.DataFrame:
 def _plot_weather_passenger(
     x_vals, rain_vals, in_vals, out_vals, x_label, title, fig_size=(5.0, 3.0)
 ):
-    """강수량(막대) + 입/출항 여객수(라인) 그래프."""
+    """입/출항 여객수(누적 막대) + 강수량(라인) 그래프."""
     fig, ax = plt.subplots(figsize=fig_size)
     ax2 = ax.twinx()
 
-    ax.bar(x_vals, rain_vals, color="#6BAED6", alpha=0.45, label="강수량 합 (mm)")
-    ax2.plot(
+    ax.bar(x_vals, in_vals, color="#2CA02C", alpha=0.6, label="입도객수")
+    ax.bar(
         x_vals,
-        in_vals,
-        marker="o",
-        linewidth=2,
-        color="#2CA02C",
-        label="입도객수",
+        out_vals,
+        bottom=in_vals,
+        color="#E45756",
+        alpha=0.55,
+        label="출도객수",
     )
     ax2.plot(
         x_vals,
-        out_vals,
+        rain_vals,
         marker="o",
         linewidth=2,
-        linestyle="--",
-        color="#E45756",
-        label="출도객수",
+        color="#4C78A8",
+        label="강수량 합 (mm)",
     )
 
     ax.set_xlabel(x_label)
-    ax.set_ylabel("강수량 합 (mm)", color="#6BAED6")
-    ax2.set_ylabel("여객수")
+    ax.set_ylabel("여객수")
+    ax2.set_ylabel("강수량 합 (mm)", color="#4C78A8")
     ax.set_title(title)
-    ax.grid(True, axis="y", alpha=0.2)
+    ax.grid(True, axis="y", alpha=0.2, linestyle="--")
 
     handles = [
-        plt.Line2D([0], [0], color="#6BAED6", lw=8, alpha=0.45),
-        plt.Line2D([0], [0], color="#2CA02C", marker="o"),
-        plt.Line2D([0], [0], color="#E45756", marker="o", linestyle="--"),
+        plt.Rectangle((0, 0), 1, 1, color="#2CA02C", alpha=0.6),
+        plt.Rectangle((0, 0), 1, 1, color="#E45756", alpha=0.55),
+        plt.Line2D([0], [0], color="#4C78A8", marker="o"),
     ]
-    labels = ["강수량 합 (mm)", "입도객수", "출도객수"]
+    labels = ["입도객수", "출도객수", "강수량 합 (mm)"]
     ax.legend(handles, labels, loc="upper left", frameon=False)
     fig.tight_layout()
     return fig
 
 
 def _plot_bar_matplotlib(x_vals, y_vals, x_label, title, fig_size=(5.0, 3.0)):
-    """막대 그래프 (matplotlib)"""
+    """라인 + 영역 그래프 (matplotlib)"""
     fig, ax = plt.subplots(figsize=fig_size)
-    ax.bar(x_vals, y_vals, color="#6BAED6", alpha=0.75)
+    ax.plot(x_vals, y_vals, color="#3E7CB1", linewidth=2.4, marker="o", markersize=5)
+    ax.fill_between(x_vals, y_vals, color="#C7E6F5", alpha=0.8)
     ax.set_xlabel(x_label)
     ax.set_ylabel("건수")
     ax.set_title(title)
-    ax.grid(True, axis="y", alpha=0.2)
+    ax.grid(True, axis="y", alpha=0.2, linestyle="--")
+    if y_vals:
+        peak_idx = max(range(len(y_vals)), key=lambda i: y_vals[i])
+        ax.scatter(
+            [x_vals[peak_idx]],
+            [y_vals[peak_idx]],
+            s=60,
+            color="#F28E2B",
+            edgecolor="#1F2D3D",
+            linewidth=0.6,
+            zorder=3,
+        )
+        ax.annotate(
+            "피크",
+            (x_vals[peak_idx], y_vals[peak_idx]),
+            xytext=(4, 10),
+            textcoords="offset points",
+            fontsize=9,
+            color="#1F2D3D",
+        )
     fig.tight_layout()
     return fig
+
+
+def _vega_base_config():
+    """Vega-Lite 차트 공통 스타일 설정."""
+    return {
+        "axis": {
+            "titleFontSize": 10,
+            "labelFontSize": 10,
+            "labelColor": "#1F2D3D",
+            "titleColor": "#1F2D3D",
+            "gridColor": "#E6EEF5",
+        },
+        "view": {"stroke": "transparent"},
+    }
+
+
+def _vega_bar_spec(x_field: str, y_field: str, title: str, height: int):
+    return {
+        "padding": {"top": 6, "right": 8, "bottom": 2, "left": 8},
+        "mark": {
+            "type": "bar",
+            "cornerRadiusTopLeft": 6,
+            "cornerRadiusTopRight": 6,
+            "color": "#F5B97A",
+            "opacity": 0.65,
+        },
+        "encoding": {
+            "x": {"field": x_field, "type": "ordinal", "axis": {"labelAngle": 0}},
+            "y": {"field": y_field, "type": "quantitative"},
+            "tooltip": [
+                {"field": x_field, "type": "ordinal"},
+                {"field": y_field, "type": "quantitative"},
+            ],
+        },
+        "height": height,
+        "title": None,
+        "config": _vega_base_config(),
+    }
+
+
+def _vega_weather_passenger_spec(x_field: str, title: str, height: int):
+    return {
+        "padding": {"top": 16, "right": 8, "bottom": 2, "left": 8},
+        "layer": [
+            {
+                "transform": [{"calculate": "'월 강수량 합 (mm)'", "as": "시리즈"}],
+                "mark": {"type": "bar", "color": "#B9CFE3", "opacity": 0.45},
+                "encoding": {
+                    "x": {"field": x_field, "type": "ordinal", "axis": {"labelAngle": 0}},
+                    "y": {
+                        "field": "강수량",
+                        "type": "quantitative",
+                        "axis": {"title": "강수량(mm)"},
+                    },
+                    "color": {
+                        "field": "시리즈",
+                        "type": "nominal",
+                        "scale": {
+                            "domain": ["월 강수량 합 (mm)"],
+                            "range": ["#B9CFE3"],
+                        },
+                        "legend": {
+                            "orient": "top",
+                            "direction": "horizontal",
+                            "title": None,
+                            "offset": 6,
+                            "padding": 0,
+                            "labelFontSize": 10,
+                            "labelLimit": 120,
+                        },
+                    },
+                    "tooltip": [
+                        {"field": x_field, "type": "ordinal"},
+                        {"field": "강수량", "type": "quantitative"},
+                    ],
+                },
+            },
+            {
+                "transform": [{"calculate": "'월 입도객수'", "as": "시리즈"}],
+                "mark": {
+                    "type": "line",
+                    "color": "#2CA02C",
+                    "strokeWidth": 2.6,
+                    "point": {"filled": True, "size": 70},
+                },
+                "encoding": {
+                    "x": {"field": x_field, "type": "ordinal"},
+                    "y": {
+                        "field": "입도",
+                        "type": "quantitative",
+                        "axis": {"title": "여객수", "orient": "right"},
+                    },
+                    "color": {
+                        "field": "시리즈",
+                        "type": "nominal",
+                        "scale": {
+                            "domain": ["월 입도객수", "월 출도객수"],
+                            "range": ["#2CA02C", "#D62728"],
+                        },
+                        "legend": {
+                            "orient": "top",
+                            "direction": "horizontal",
+                            "title": None,
+                            "symbolType": "stroke",
+                            "offset": 6,
+                            "padding": 0,
+                            "labelFontSize": 10,
+                            "labelLimit": 120,
+                        },
+                    },
+                    "tooltip": [
+                        {"field": x_field, "type": "ordinal"},
+                        {"field": "입도", "type": "quantitative"},
+                    ],
+                },
+            },
+            {
+                "transform": [{"calculate": "'월 출도객수'", "as": "시리즈"}],
+                "mark": {
+                    "type": "line",
+                    "color": "#E45756",
+                    "strokeWidth": 2.6,
+                    "point": {"filled": True, "size": 70},
+                },
+                "encoding": {
+                    "x": {"field": x_field, "type": "ordinal"},
+                    "y": {
+                        "field": "출도",
+                        "type": "quantitative",
+                        "axis": None,
+                    },
+                    "color": {
+                        "field": "시리즈",
+                        "type": "nominal",
+                        "scale": {
+                            "domain": ["월 입도객수", "월 출도객수"],
+                            "range": ["#2CA02C", "#D62728"],
+                        },
+                        "legend": None,
+                    },
+                    "tooltip": [
+                        {"field": x_field, "type": "ordinal"},
+                        {"field": "출도", "type": "quantitative"},
+                    ],
+                },
+            },
+        ],
+        "height": height,
+        "resolve": {"scale": {"y": "independent", "color": "independent"}},
+        "title": None,
+        "config": _vega_base_config(),
+    }
+
+
+def _vega_bar_color_spec(
+    x_field: str, y_field: str, color_field: str, title: str, height: int
+):
+    return {
+        "padding": {"top": 10, "right": 8, "bottom": 2, "left": 18},
+        "mark": {
+            "type": "bar",
+            "cornerRadiusTopLeft": 6,
+            "cornerRadiusTopRight": 6,
+            "opacity": 0.85,
+        },
+        "encoding": {
+            "x": {"field": x_field, "type": "ordinal", "axis": {"labelAngle": 0}},
+            "y": {
+                "field": y_field,
+                "type": "quantitative",
+                "axis": {"title": "여객수"},
+            },
+            "color": {
+                "field": color_field,
+                "type": "nominal",
+                "scale": {
+                    "domain": ["비수기", "성수기", "비수기(평균↑)"],
+                    "range": ["#A9CFAE", "#F1C58B", "#E6D07A"],
+                },
+                "legend": {
+                    "orient": "top-right",
+                    "direction": "horizontal",
+                    "title": None,
+                    "padding": 0,
+                    "offset": 6,
+                    "labelFontSize": 10,
+                },
+            },
+            "tooltip": [
+                {"field": x_field, "type": "ordinal"},
+                {"field": y_field, "type": "quantitative"},
+                {"field": color_field, "type": "nominal"},
+            ],
+        },
+        "height": height,
+        "title": None,
+        "config": _vega_base_config(),
+    }
 
 
 def _compute_season_map(monthly_df: pd.DataFrame, value_col: str):
@@ -1925,8 +2142,8 @@ if show_graphs:
 
     st.write("")
     g1, g2, g3 = st.columns(3, gap="large")
-    GRAPH_CARD_H = 600
-    GRAPH_CHART_H = 320
+    GRAPH_CARD_H = 680
+    GRAPH_CHART_H = 360
     GRAPH_FIG_W = 5.0
     GRAPH_FIG_H = 3.2
     GRAPH_FIG_W_G2 = 7.0
@@ -1948,7 +2165,7 @@ if show_graphs:
     with g1:
         with st.container(border=True, height=GRAPH_CARD_H):
             st.markdown(
-                '<div class="card-title">교통단속 건수</div>',
+                '<div class="card-title">단속건수 통계</div>',
                 unsafe_allow_html=True,
             )
             df_counts = load_enforcement_counts_csv()
@@ -1980,14 +2197,16 @@ if show_graphs:
                             .size()
                             .reindex(range(1, 13), fill_value=0)
                         )
-                        fig = _plot_bar_matplotlib(
-                            summary.index.tolist(),
-                            summary.tolist(),
-                            "월",
-                            f"{year}년 월별 교통단속 건수",
-                            fig_size=(GRAPH_FIG_W, GRAPH_FIG_H),
+                        plot_df = pd.DataFrame(
+                            {"월": summary.index.tolist(), "건수": summary.tolist()}
                         )
-                        st.pyplot(fig, width="stretch")
+                        spec = _vega_bar_spec(
+                            "월",
+                            "건수",
+                            f"{year}년 월별 교통단속 건수",
+                            GRAPH_CHART_H,
+                        )
+                        st.vega_lite_chart(plot_df, spec, use_container_width=True)
                     else:
                         month = st.selectbox(
                             "월 선택",
@@ -2002,27 +2221,40 @@ if show_graphs:
                             .size()
                             .reindex(years, fill_value=0)
                         )
-                        fig = _plot_bar_matplotlib(
-                            summary.index.tolist(),
-                            summary.tolist(),
-                            "연도",
-                            f"{month}월 연도별 교통단속 건수",
-                            fig_size=(GRAPH_FIG_W, GRAPH_FIG_H),
+                        plot_df = pd.DataFrame(
+                            {"연도": summary.index.tolist(), "건수": summary.tolist()}
                         )
-                        st.pyplot(fig, width="stretch")
+                        spec = _vega_bar_spec(
+                            "연도",
+                            "건수",
+                            f"{month}월 연도별 교통단속 건수",
+                            GRAPH_CHART_H,
+                        )
+                        st.vega_lite_chart(plot_df, spec, use_container_width=True)
             st.write("")
-            st.markdown('<div class="card-sub">설명 영역</div>', unsafe_allow_html=True)
             st.write(
-                "- 연도별 선택 시: 해당 연도의 월별 단속 건수가 막대로 표시됩니다.\n"
-                "- 월별 선택 시: 선택한 월의 연도별 단속 건수 비교가 가능합니다.\n"
-                "- 막대 높이 차이를 통해 성수/비수기의 변화 폭을 직관적으로 봅니다.\n"
-                "- 기준선이 없으므로, 변화 추이는 막대 간 상대 비교로 해석합니다."
+                "교통단속 통계 결과\n\n"
+                "- 연도·월별 교통 단속 발생 특성\n"
+                "연도별 교통 단속 건수는 2023년이 가장 많고, 그다음이 2021년, 2024년 순으로 나타났다.\n"
+                "월별로는 8월, 5월, 7월 순으로 단속 건수가 많아, 성수기 기간에 단속이 집중되는 경향이 확인된다.\n"
+                "- 가장 많이 단속된 법 조항: 이륜차 안전모 착용 의무\n"
+                "전체 단속 중 도로교통법 제50조 제3항(이륜차 안전모 착용 의무)이 65건으로 가장 높은 비중을 차지하였다.\n"
+                "안전모 미착용, 턱끈 미고정, 동승자 미착용 등 이륜차 이용 과정에서 반복적으로 발생하는 위반 유형이 주요 단속 대상이었다.\n"
+                "- 차량 이동 관련 주요 단속 유형\n"
+                "제54조 제1항(사고 발생 시 조치의무 위반)과 제48조 제1항(안전운전의무 위반)이 각각 41건, 39건으로 나타나,\n"
+                "차량 이동이 많아지는 시기에 운전자 준수 의무 위반에 대한 단속 비중이 높아지는 구조가 확인된다.\n"
+                "- 성수기 단속 집중 현상\n"
+                "평균 대비 단속 건수가 높은 성수기 달은 4~8월과 10월로 나타났으며, 특히 5월과 10월에 단속 건수가 집중되었다.\n"
+                "여객 유입이 많은 5월에는 이륜차 관련 단속, 차량 유입이 많은 8월에는 차량 관련 단속이 상대적으로 많았다.\n"
+                "- 비수기(2월) 주정차 단속의 특징\n"
+                "2월은 전반적으로 여객·차량 이동이 적은 시기임에도 불구하고, 제73조 제2항(불법 주정차) 단속이 상대적으로 많이 발생하였다.\n"
+                "이는 겨울철 도로 여건 변화로 인해 정차·주차 질서 위반 단속 비중이 높아지는 월별 특성으로 나타난다."
             )
 
     with g2:
         with st.container(border=True, height=GRAPH_CARD_H):
             st.markdown(
-                '<div class="card-title">강수량 · 여객수</div>',
+                '<div class="card-title">강수량 및 여객수 통계</div>',
                 unsafe_allow_html=True,
             )
             monthly = load_weather_passenger_monthly()
@@ -2051,16 +2283,18 @@ if show_graphs:
                             .set_index("월")
                             .reindex(range(1, 13), fill_value=0)
                         )
-                        fig = _plot_weather_passenger(
-                            sub.index.tolist(),
-                            sub["월강수합"].tolist(),
-                            sub["월입항합"].tolist(),
-                            sub["월출항합"].tolist(),
-                            "월",
-                            f"{year}년 월별 강수량/여객수",
-                            fig_size=(GRAPH_FIG_W_G2, GRAPH_FIG_H_G2),
+                        plot_df = pd.DataFrame(
+                            {
+                                "월": sub.index.tolist(),
+                                "강수량": sub["월강수합"].tolist(),
+                                "입도": sub["월입항합"].tolist(),
+                                "출도": sub["월출항합"].tolist(),
+                            }
                         )
-                        st.pyplot(fig, width="stretch")
+                        spec = _vega_weather_passenger_spec(
+                            "월", f"{year}년 월별 강수량/여객수", GRAPH_CHART_H
+                        )
+                        st.vega_lite_chart(plot_df, spec, use_container_width=True)
                     else:
                         month = st.selectbox(
                             "월 선택",
@@ -2073,23 +2307,32 @@ if show_graphs:
                             .set_index("연")
                             .reindex(years, fill_value=0)
                         )
-                        fig = _plot_weather_passenger(
-                            sub.index.tolist(),
-                            sub["월강수합"].tolist(),
-                            sub["월입항합"].tolist(),
-                            sub["월출항합"].tolist(),
-                            "연도",
-                            f"{month}월 연도별 강수량/여객수",
-                            fig_size=(GRAPH_FIG_W_G2, GRAPH_FIG_H_G2),
+                        plot_df = pd.DataFrame(
+                            {
+                                "연도": sub.index.tolist(),
+                                "강수량": sub["월강수합"].tolist(),
+                                "입도": sub["월입항합"].tolist(),
+                                "출도": sub["월출항합"].tolist(),
+                            }
                         )
-                        st.pyplot(fig, width="stretch")
+                        spec = _vega_weather_passenger_spec(
+                            "연도", f"{month}월 연도별 강수량/여객수", GRAPH_CHART_H
+                        )
+                        st.vega_lite_chart(plot_df, spec, use_container_width=True)
             st.write("")
-            st.markdown('<div class="card-sub">설명 영역</div>', unsafe_allow_html=True)
-            st.write(
-                "- 막대는 강수량 합, 선은 입도/출도 여객수 추이를 함께 보여줍니다.\n"
-                "- 연도별 선택 시: 한 해의 월별 패턴을 한 화면에서 비교합니다.\n"
-                "- 월별 선택 시: 같은 달의 연도별 변화 방향을 확인합니다.\n"
-                "- 막대와 선의 동조/역행 여부가 핵심 해석 포인트입니다."
+            st.markdown(
+                "강수량 및 입도객 수 통계 결과\n\n"
+                "- 입·출도 여객수는 2021년 데이터 시작 시점을 기준으로 월별 흐름을 정렬하여 비교하였다.\n"
+                "- 봄철 수요 증가 패턴\n"
+                "3~5월 구간에서는 입·출도 여객수가 월 단위로 연속 증가하는 흐름이 확인된다. "
+                "해당 기간은 강수량이 연중 최저 수준에 해당하여, 기상 변수의 간섭이 상대적으로 적은 상태에서 "
+                "교통 수요 증가가 뚜렷하게 나타난 구간이다.\n"
+                "- 강수량 피크 구간의 방향성 변화\n"
+                "강수량이 높은 구간에서는 입도 대비 출도 여객이 상대적으로 커지며, "
+                "출도 우세(교통 흐름 역전) 패턴이 관측된다.\n"
+                "- 입도·출도 최고치 시점의 비대칭\n"
+                "입도 여객수는 8월에 정점을 기록한 뒤 감소하는 흐름이 나타나는 반면, "
+                "출도 여객수는 10월에 재상승(증가)이 뚜렷하게 나타나 정점 시점이 서로 다르게 형성된다."
             )
     with g3:
         with st.container(border=True, height=GRAPH_CARD_H):
@@ -2115,7 +2358,6 @@ if show_graphs:
                     key="peak_year",
                 )
                 value_col = "월입항합" if direction == "입도" else "월출항합"
-                season_map, threshold = _compute_season_map(monthly, value_col)
                 sub = (
                     monthly[monthly["연"] == year]
                     .set_index("월")
@@ -2123,40 +2365,101 @@ if show_graphs:
                 )
                 months = list(range(1, 13))
                 values = sub[value_col].tolist()
-                colors = [
-                    "#B22222" if season_map.get(m) == "성수기" else "#87CEEB"
-                    for m in months
-                ]
+                threshold = sum(values) / len(values) if values else None
 
-                fig, ax = plt.subplots(figsize=(GRAPH_FIG_W, GRAPH_FIG_H))
-                ax.bar(months, values, color=colors, alpha=0.8)
-                if threshold is not None:
-                    ax.axhline(
-                        threshold,
-                        color="gray",
-                        linestyle="--",
-                        linewidth=1.2,
-                        label=f"전체 평균 ({threshold:,.0f})",
-                    )
-                ax.set_title(
-                    f"{year}년 월별 여객 수 ({direction} 기준)",
-                    fontsize=12,
+                peak_months = {6, 7, 8}
+                plot_df = pd.DataFrame(
+                    {
+                        "월": months,
+                        "여객수": values,
+                        "구분": [
+                            (
+                                "성수기"
+                                if m in peak_months
+                                else (
+                                    "비수기(평균↑)"
+                                    if (threshold is not None and v > threshold)
+                                    else "비수기"
+                                )
+                            )
+                            for m, v in zip(months, values)
+                        ],
+                    }
                 )
-                ax.set_xlabel("월")
-                ax.set_ylabel("여객 수")
-                ax.set_xticks(months)
-                ax.grid(axis="y", linestyle="--", alpha=0.6)
+                spec = _vega_bar_color_spec(
+                    "월",
+                    "여객수",
+                    "구분",
+                    f"{year}년 월별 여객 수 ({direction} 기준)",
+                    GRAPH_CHART_H,
+                )
                 if threshold is not None:
-                    ax.legend(loc="upper right")
-                fig.tight_layout()
-                st.pyplot(fig, width="stretch")
+                    spec = {
+                        "layer": [
+                            spec,
+                            {
+                                "data": {"values": [{"label": "연평균", "value": float(threshold)}]},
+                                "mark": {
+                                    "type": "rule",
+                                    "color": "#000000",
+                                    "strokeWidth": 1.2,
+                                    "strokeDash": [6, 4],
+                                },
+                                "encoding": {
+                                    "y": {"field": "value", "type": "quantitative"},
+                                    "strokeDash": {
+                                        "field": "label",
+                                        "type": "nominal",
+                                        "scale": {"range": [[6, 4]]},
+                                        "legend": {
+                                            "orient": "top-right",
+                                            "direction": "horizontal",
+                                            "title": None,
+                                            "symbolType": "stroke",
+                                            "symbolStrokeDash": [6, 4],
+                                            "symbolStrokeWidth": 2,
+                                            "offset": 6,
+                                            "padding": 0,
+                                            "legendY": 0,
+                                            "labelFontSize": 10,
+                                        },
+                                    },
+                                    "tooltip": [
+                                        {
+                                            "field": "value",
+                                            "type": "quantitative",
+                                            "title": "연평균",
+                                            "format": ",.0f",
+                                        },
+                                    ],
+                                    "axis": None,
+                                },
+                            },
+                        ],
+                        "config": _vega_base_config(),
+                    }
+                st.vega_lite_chart(plot_df, spec, use_container_width=True)
             st.write("")
-            st.markdown('<div class="card-sub">설명 영역</div>', unsafe_allow_html=True)
-            st.write(
-                "- 월별 막대 색으로 성수기/비수기를 구분해 시각화합니다.\n"
-                "- 기준선은 전체 평균이며, 평균을 넘는 달이 성수기로 표시됩니다.\n"
-                "- 입도/출도 선택에 따라 성수기 판단이 달라질 수 있습니다.\n"
-                "- 월별 변동이 큰 구간을 색 대비로 빠르게 파악합니다."
+            st.markdown(
+                "입출도객 수 통계 결과\n\n"
+                "- 평균 산출 기준 및 보정 방식\n"
+                "완전한 연도인 2022~2024년 자료만을 사용해 월별 평균을 계산하였으며, "
+                "2021년과 2025년의 누락된 월은 해당 평균값으로 보정하였다. 이를 통해 출도 평균 여객 수는 "
+                "17,341명으로 산출되었다.\n"
+                "- 출도 여객 수의 계절적 분포\n"
+                "출도 여객 수는 4~8월과 10월에 평균보다 높게 나타났으며, "
+                "이 중 5월이 연중 가장 많은 출도 여객 수를 기록하였다. 평균보다 높은 달은 성수기, "
+                "낮은 달은 비수기로 구분하였다.\n"
+                "- 입도 여객 수의 분포 특징\n"
+                "입도 여객 수 역시 4~8월과 10월에 집중되었고, 출도와 동일하게 5월에 가장 많은 입도 여객 수가 발생하였다. "
+                "다만, 입도 평균 여객 수는 약 552명으로 출도 평균에 비해 현저히 낮은 수준이다.\n"
+                "- 입도·출도 규모 차이에 대한 해석\n"
+                "출도 평균 여객 수(17,341명)에 비해 입도 평균 여객 수가 크게 적은 것은, "
+                "체류 후 외부로 이동하는 수요가 상대적으로 크거나 일시적 방문 성격의 이동이 많음을 시사한다.\n"
+                "- 기상 및 관광 요인에 따른 종합 분석\n"
+                "4~10월은 겨울철 대비 해상 기상이 안정되고 파도가 낮아 선박 운항이 원활한 시기로, "
+                "여객 수 증가에 직접적인 영향을 미친 것으로 보인다. 또한 이 시기는 자연 경관과 야외 활동 여건이 좋아 "
+                "관광객 중심의 여객 수요가 집중되는 계절적 특성을 보인다."
             )
 else:
     st.write("")
