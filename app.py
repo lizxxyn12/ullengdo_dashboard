@@ -22,6 +22,10 @@ try:
     from folium.plugins import MarkerCluster
 except Exception:
     MarkerCluster = None
+try:
+    from folium.features import DivIcon
+except Exception:
+    DivIcon = None
 
 try:
     from streamlit_folium import st_folium
@@ -545,7 +549,7 @@ def load_ev_charger_points() -> list[tuple[float, float, str]]:
     return points
 
 
-def load_rockfall_points() -> tuple[list[tuple[float, float, str]], list[str]]:
+def load_rockfall_points() -> tuple[list[tuple[float, float, str]], list[dict]]:
     """rockfall 폴더 사진명(주소) 기반으로 좌표 매칭."""
     rock_dir = Path(__file__).parent / "rockfall"
     if not rock_dir.exists():
@@ -597,6 +601,7 @@ def load_rockfall_points() -> tuple[list[tuple[float, float, str]], list[str]]:
         points = []
         meta = []
 
+        idx_counter = 0
         for _, row in df_coords.iterrows():
             lat = pd.to_numeric(row.get(lat_col, None), errors="coerce")
             lon = pd.to_numeric(row.get(lon_col, None), errors="coerce")
@@ -622,12 +627,16 @@ def load_rockfall_points() -> tuple[list[tuple[float, float, str]], list[str]]:
             points.append((float(lat), float(lon), f"낙석 발생 위치 : {label_text}"))
             meta.append(
                 {
+                    "idx": int(idx_counter),
                     "lat": float(lat),
                     "lon": float(lon),
                     "photo": str(photo) if photo else None,
                     "name": str(label_text),
+                    "date": row.get("사고일자", None),
+                    "damage": row.get("피해여부", None),
                 }
             )
+            idx_counter += 1
 
         return points, meta
 
@@ -890,6 +899,8 @@ def render_ulleung_folium_map(
     kind: str = "base",
     height: int = 420,
     accident_df: pd.DataFrame | None = None,
+    highlight_idx: int | None = None,
+    center_override: tuple[float, float] | None = None,
 ):
     """울릉군 Folium 지도 렌더."""
 
@@ -903,6 +914,8 @@ def render_ulleung_folium_map(
 
     # 울릉도 중심(대략)
     center = (37.5044, 130.8757)
+    if center_override is not None:
+        center = center_override
 
     m = folium.Map(
         location=center, zoom_start=12, tiles="OpenStreetMap", control_scale=True
@@ -1057,6 +1070,50 @@ def render_ulleung_folium_map(
             fill_opacity=0.85,
             popup=popup,
         ).add_to(marker_parent)
+
+    if kind in {"accident", "rockfall"} and highlight_idx is not None:
+        meta_key = "acc_points_meta" if kind == "accident" else "rockfall_points_meta"
+        pulse_color = "#ff0000" if kind == "accident" else "#ff8a00"
+        pulse_rgba = "255, 0, 0" if kind == "accident" else "255, 138, 0"
+        for p in st.session_state.get(meta_key, []):
+            if int(p.get("idx", -1)) == int(highlight_idx):
+                lat, lon = float(p["lat"]), float(p["lon"])
+                if DivIcon is not None:
+                    pulse_css = f"""
+                    <div style="
+                        width: 20px;
+                        height: 20px;
+                        background-color: rgba({pulse_rgba}, 0.6);
+                        border-radius: 50%;
+                        box-shadow: 0 0 0 0 rgba({pulse_rgba}, 0.7);
+                        animation: pulse-red 1.5s infinite;
+                        "></div>
+                    <style>
+                        @keyframes pulse-red {{
+                            0% {{ transform: scale(0.95); box-shadow: 0 0 0 0 rgba({pulse_rgba}, 0.7); }}
+                            70% {{ transform: scale(1); box-shadow: 0 0 0 20px rgba({pulse_rgba}, 0); }}
+                            100% {{ transform: scale(0.95); box-shadow: 0 0 0 0 rgba({pulse_rgba}, 0); }}
+                        }}
+                    </style>
+                    """
+                    folium.Marker(
+                        location=(lat, lon),
+                        icon=DivIcon(
+                            icon_size=(20, 20),
+                            icon_anchor=(10, 10),
+                            html=pulse_css,
+                        ),
+                    ).add_to(fg)
+                folium.CircleMarker(
+                    location=(lat, lon),
+                    radius=6,
+                    color="white",
+                    weight=2,
+                    fill=True,
+                    fill_color=pulse_color,
+                    fill_opacity=1.0,
+                ).add_to(fg)
+                break
 
     # 노선 라인(버스만 해당)
     if kind == "bus":
@@ -1809,12 +1866,18 @@ if "selected_acc_photo_path" not in st.session_state:
     st.session_state["selected_acc_photo_path"] = None
 if "selected_acc_year" not in st.session_state:
     st.session_state["selected_acc_year"] = None
+if "selected_acc_idx" not in st.session_state:
+    st.session_state["selected_acc_idx"] = None
 if "selected_rockfall_meta" not in st.session_state:
     st.session_state["selected_rockfall_meta"] = None
 if "selected_rockfall_photo_path" not in st.session_state:
     st.session_state["selected_rockfall_photo_path"] = None
 if "selected_bus_meta" not in st.session_state:
     st.session_state["selected_bus_meta"] = None
+if "selected_rock_idx" not in st.session_state:
+    st.session_state["selected_rock_idx"] = None
+if "rock_view_mode" not in st.session_state:
+    st.session_state["rock_view_mode"] = "list"
 
 # -----------------------------
 # Helper functions for accident photo lookup
@@ -1852,6 +1915,65 @@ def _address_candidates(address: str) -> set[str]:
     keys.add(base.replace("경상북도", "").replace("울릉군", ""))
     keys.add(base.replace("경북", "").replace("울릉", ""))
     return {k for k in keys if k}
+
+
+@st.cache_data(show_spinner=False)
+def _build_accident_photo_index() -> dict[str, str]:
+    acc_dir = Path(__file__).parent / "acc_pic"
+    if not acc_dir.exists() or not acc_dir.is_dir():
+        return {}
+    exts = {".jpg", ".jpeg", ".png", ".webp"}
+    out = {}
+    for p in acc_dir.iterdir():
+        if not p.is_file():
+            continue
+        if p.suffix.lower() not in exts:
+            continue
+        key = _norm_text(p.stem)
+        if key and key not in out:
+            out[key] = str(p)
+    return out
+
+
+def _find_accident_photo_fast(address: str) -> str | None:
+    targets = _address_candidates(address)
+    if not targets:
+        return None
+    idx = _build_accident_photo_index()
+    for t in targets:
+        if t in idx:
+            return idx[t]
+    # fallback to slower fuzzy match
+    p = find_accident_photo_by_address(address)
+    return str(p) if p else None
+
+
+def _format_accident_datetime(df: pd.DataFrame, row: pd.Series) -> str:
+    candidates = [
+        "발생일시",
+        "발생일자",
+        "사고일시",
+        "일시",
+        "date",
+        "datetime",
+        "발생일",
+    ]
+    for c in candidates:
+        if c not in df.columns:
+            continue
+        v = row.get(c, None)
+        if v is None:
+            continue
+        s = str(v).strip()
+        if not s or s.lower() in ["nan", "none"]:
+            continue
+        dt = pd.to_datetime(s, errors="coerce")
+        if pd.isna(dt):
+            continue
+        if dt.hour == 0 and dt.minute == 0:
+            return dt.strftime("%Y-%m-%d")
+        return dt.strftime("%Y-%m-%d %H:%M")
+    return "미상"
 
 
 @st.cache_data(show_spinner=False)
@@ -2426,11 +2548,16 @@ with st.container(border=True, height=TOP_CARD_H):
                     st.caption("울릉군 교통사고 지점")
             with top_right:
                 if st.session_state["view_mode"] == "list":
-                    if st.button("🗺️ 지도에서 보기", use_container_width=True, type="primary"):
+                    if st.button(
+                        "🗺️ 지도에서 보기",
+                        width="stretch",
+                        type="primary",
+                        key="acc_view_map",
+                    ):
                         st.session_state["view_mode"] = "map"
                         st.rerun()
                 else:
-                    if st.button("⬅ 목록으로", use_container_width=True):
+                    if st.button("⬅ 목록으로", width="stretch", key="acc_view_list"):
                         st.session_state["view_mode"] = "list"
                         st.rerun()
 
@@ -2439,14 +2566,26 @@ with st.container(border=True, height=TOP_CARD_H):
                 st.info("표시할 사고 데이터가 없습니다.")
             else:
                 if st.session_state["view_mode"] == "list":
+                    seen_keys = set()
                     with st.container(height=TOP_CARD_H - 120, border=True):
-                        for idx, row in df_acc_list.head(50).iterrows():
+                        df_list_view = df_acc_list.copy()
+                        if "year" in df_list_view.columns:
+                            df_list_view["_year_sort"] = df_list_view["year"].fillna(0).astype(int)
+                            df_list_view = df_list_view.sort_values(
+                                by="_year_sort", ascending=False
+                            )
+                        for idx, row in df_list_view.head(10).iterrows():
                             year_val = row.get("year", 2025)
                             acc_type = row.get("type", "미상")
                             if pd.isna(acc_type):
                                 acc_type = "미상"
 
                             addr = _row_to_address(df_acc_list, row)
+                            addr_key = _norm_text(addr) if addr else ""
+                            if addr_key and addr_key in seen_keys:
+                                continue
+                            if addr_key:
+                                seen_keys.add(addr_key)
                             detail = str(row.get("detail", "")).strip()
                             if detail == "nan":
                                 detail = ""
@@ -2455,13 +2594,46 @@ with st.container(border=True, height=TOP_CARD_H):
                             if not display_title:
                                 display_title = "위치 정보 없음"
 
+                            lat = row.get("latitude", None)
+                            lon = row.get("longitude", None)
+                            lat_lon = (
+                                f"{float(lat):.5f}, {float(lon):.5f}"
+                                if pd.notna(lat) and pd.notna(lon)
+                                else "미상"
+                            )
+                            photo_path = _find_accident_photo_fast(addr) if addr else None
+                            is_selected = st.session_state.get("selected_acc_idx") == idx
+
                             with st.container(border=True):
-                                c_info, c_btn = st.columns([4, 1])
+                                c_img, c_info, c_btn = st.columns([1.2, 3, 1])
+                                with c_img:
+                                    if photo_path and os.path.isfile(str(photo_path)):
+                                        try:
+                                            st.image(str(photo_path), width="stretch")
+                                        except Exception:
+                                            st.markdown(
+                                                """
+                                                <div style="background:#f0f2f6; height:86px; display:flex; align-items:center; justify-content:center; border-radius:8px; color:#999; font-size:0.8rem;">
+                                                    사진 불러오는 중
+                                                </div>
+                                                """,
+                                                unsafe_allow_html=True,
+                                            )
+                                    else:
+                                        st.markdown(
+                                            """
+                                            <div style="background:#f0f2f6; height:86px; display:flex; align-items:center; justify-content:center; border-radius:8px; color:#999; font-size:0.8rem;">
+                                                사진 준비중
+                                            </div>
+                                            """,
+                                            unsafe_allow_html=True,
+                                        )
                                 with c_info:
-                                    st.markdown(f"**{display_title}**")
-                                    st.caption(f"{year_val}년 | {acc_type}")
+                                    sel_tag = " <span style='color:#d12c2c;'>● 선택</span>" if is_selected else ""
+                                    st.markdown(f"**{display_title}**{sel_tag}", unsafe_allow_html=True)
+                                    st.caption(f"발생연도: {year_val} | 유형: {acc_type}")
                                     st.markdown(
-                                        f"<div style='color:#666; font-size:0.85rem;'>{addr}</div>",
+                                        f"<div style='color:#666; font-size:0.85rem;'>위치: {addr if addr else '미상'}<br/>좌표: {lat_lon}</div>",
                                         unsafe_allow_html=True,
                                     )
                                 with c_btn:
@@ -2469,9 +2641,10 @@ with st.container(border=True, height=TOP_CARD_H):
                                     if st.button(
                                         "위치 확인 >",
                                         key=f"btn_go_map_{idx}",
-                                        use_container_width=True,
+                                        width="stretch",
                                     ):
                                         _set_selected_accident(df_acc_list, idx)
+                                        st.session_state["selected_acc_idx"] = int(idx)
                                         st.session_state["view_mode"] = "map"
                                         st.rerun()
                 else:
@@ -2488,10 +2661,20 @@ with st.container(border=True, height=TOP_CARD_H):
                     if year_filter is not None:
                         df_view = df_acc[df_acc["year"] == year_filter]
 
+                    highlight_idx = st.session_state.get("selected_acc_idx")
+                    center_override = None
+                    if highlight_idx is not None:
+                        for p in st.session_state.get("acc_points_meta", []):
+                            if int(p.get("idx", -1)) == int(highlight_idx):
+                                center_override = (float(p["lat"]), float(p["lon"]))
+                                break
+
                     map_state = render_ulleung_folium_map(
                         kind="accident",
                         height=MAP_H,
                         accident_df=df_view,
+                        highlight_idx=highlight_idx,
+                        center_override=center_override,
                     )
 
                     if isinstance(map_state, dict):
@@ -2513,6 +2696,7 @@ with st.container(border=True, height=TOP_CARD_H):
                                 st.session_state["selected_rockfall_photo_path"] = None
                                 st.session_state["selected_bus_meta"] = None
                                 _set_selected_accident(df_acc, best_idx)
+                                st.session_state["selected_acc_idx"] = int(best_idx)
 
         with right_detail:
             _render_photo_detail_panel("accident")
@@ -2521,34 +2705,186 @@ with st.container(border=True, height=TOP_CARD_H):
     with t3:
         left_main, right_detail = st.columns([2.2, 1], gap="large")
         with left_main:
-            st.caption("울릉군 낙석 발생 지점")
-            rock_map_state = render_ulleung_folium_map(kind="rockfall", height=MAP_H)
-            if isinstance(rock_map_state, dict):
-                last = rock_map_state.get("last_object_clicked")
-                rock_meta = st.session_state.get("rockfall_points_meta", [])
-                if isinstance(last, dict) and "lat" in last and "lng" in last and rock_meta:
-                    lat0 = float(last["lat"])
-                    lon0 = float(last["lng"])
-                    best = None
-                    best_d = None
+            top_left, top_right = st.columns([4, 1])
+            with top_left:
+                if st.session_state["rock_view_mode"] == "list":
+                    st.caption("낙석 발생 목록입니다. 위치 확인 버튼을 누르면 지도로 이동합니다.")
+                else:
+                    st.caption("울릉군 낙석 발생 지점")
+            with top_right:
+                if st.session_state["rock_view_mode"] == "list":
+                    if st.button(
+                        "🗺️ 지도에서 보기",
+                        width="stretch",
+                        type="primary",
+                        key="rock_view_map",
+                    ):
+                        st.session_state["rock_view_mode"] = "map"
+                        st.rerun()
+                else:
+                    if st.button("⬅ 목록으로", width="stretch", key="rock_view_list"):
+                        st.session_state["rock_view_mode"] = "list"
+                        st.rerun()
+
+            def _rockfall_meta_text(item: dict):
+                location_label = item.get("name") or "(없음)"
+                date_val = item.get("date", None)
+                damage_val = item.get("damage", None)
+                date_label = (
+                    "미상"
+                    if date_val in (None, "") or pd.isna(date_val)
+                    else str(date_val).strip()
+                )
+                damage_label = (
+                    "미상"
+                    if damage_val in (None, "") or pd.isna(damage_val)
+                    else str(damage_val).strip()
+                )
+                return "\n".join(
+                    [
+                        f"발견일: {date_label}",
+                        f"위치: {location_label}",
+                        f"피해여부: {damage_label}",
+                        "조치상태: 완료",
+                    ]
+                )
+
+            if st.session_state["rock_view_mode"] == "list":
+                _, rock_meta = load_rockfall_points()
+                if not rock_meta:
+                    st.info("표시할 낙석 데이터가 없습니다.")
+                else:
+                    with st.container(height=TOP_CARD_H - 120, border=True):
+                        for item in rock_meta[:10]:
+                            item_idx = int(item.get("idx", 0))
+                            name = item.get("name", "위치 미상")
+                            photo = item.get("photo", None)
+                            lat = item.get("lat", None)
+                            lon = item.get("lon", None)
+                            lat_lon = (
+                                f"{float(lat):.5f}, {float(lon):.5f}"
+                                if pd.notna(lat) and pd.notna(lon)
+                                else "미상"
+                            )
+                            is_selected = st.session_state.get("selected_rock_idx") == item_idx
+                            date_val = item.get("date", None)
+                            damage_val = item.get("damage", None)
+                            date_label = (
+                                "미상"
+                                if date_val in (None, "") or pd.isna(date_val)
+                                else str(date_val).strip()
+                            )
+                            damage_label = (
+                                "미상"
+                                if damage_val in (None, "") or pd.isna(damage_val)
+                                else str(damage_val).strip()
+                            )
+
+                            with st.container(border=True):
+                                c_img, c_info, c_btn = st.columns([1.2, 3, 1])
+                                with c_img:
+                                    if photo and os.path.isfile(str(photo)):
+                                        try:
+                                            st.image(str(photo), width="stretch")
+                                        except Exception:
+                                            st.markdown(
+                                                """
+                                                <div style="background:#f0f2f6; height:86px; display:flex; align-items:center; justify-content:center; border-radius:8px; color:#999; font-size:0.8rem;">
+                                                    사진 불러오는 중
+                                                </div>
+                                                """,
+                                                unsafe_allow_html=True,
+                                            )
+                                    else:
+                                        st.markdown(
+                                            """
+                                            <div style="background:#f0f2f6; height:86px; display:flex; align-items:center; justify-content:center; border-radius:8px; color:#999; font-size:0.8rem;">
+                                                사진 준비중
+                                            </div>
+                                            """,
+                                            unsafe_allow_html=True,
+                                        )
+                                with c_info:
+                                    sel_tag = (
+                                        " <span style='color:#d12c2c;'>● 선택</span>"
+                                        if is_selected
+                                        else ""
+                                    )
+                                    st.markdown(f"**{name}**{sel_tag}", unsafe_allow_html=True)
+                                    st.caption(
+                                        f"발견일: {date_label} | 피해여부: {damage_label}"
+                                    )
+                                    st.markdown(
+                                        f"<div style='color:#666; font-size:0.85rem;'>조치상태: 완료<br/>좌표: {lat_lon}</div>",
+                                        unsafe_allow_html=True,
+                                    )
+                                with c_btn:
+                                    st.write("")
+                                    if st.button(
+                                        "위치 확인 >",
+                                        key=f"btn_rock_map_{item_idx}",
+                                        width="stretch",
+                                    ):
+                                        st.session_state["selected_acc_meta"] = None
+                                        st.session_state["selected_acc_photo_path"] = None
+                                        st.session_state["selected_bus_meta"] = None
+                                        st.session_state["selected_rock_idx"] = item_idx
+                                        st.session_state["selected_rockfall_meta"] = _rockfall_meta_text(
+                                            item
+                                        )
+                                        st.session_state["selected_rockfall_photo_path"] = (
+                                            str(photo) if photo else None
+                                        )
+                                        st.session_state["rock_view_mode"] = "map"
+                                        st.rerun()
+            else:
+                highlight_idx = st.session_state.get("selected_rock_idx")
+                center_override = None
+                _, rock_meta = load_rockfall_points()
+                if highlight_idx is not None:
                     for p in rock_meta:
-                        d = abs(float(p["lat"]) - lat0) + abs(float(p["lon"]) - lon0)
-                        if best_d is None or d < best_d:
-                            best_d = d
-                            best = p
-                    if best is not None and best_d is not None and best_d < 0.002:
-                        st.session_state["selected_acc_meta"] = None
-                        st.session_state["selected_acc_photo_path"] = None
-                        st.session_state["selected_acc_year"] = None
-                        st.session_state["selected_bus_meta"] = None
-                        name = best.get("name", "")
-                        photo = best.get("photo", None)
-                        st.session_state["selected_rockfall_meta"] = (
-                            f"낙석 발생 위치 : {name if name else '(없음)'}\n통제 공지 : 복구 작업 중"
-                        )
-                        st.session_state["selected_rockfall_photo_path"] = (
-                            str(photo) if photo else None
-                        )
+                        if int(p.get("idx", -1)) == int(highlight_idx):
+                            center_override = (float(p["lat"]), float(p["lon"]))
+                            break
+                rock_map_state = render_ulleung_folium_map(
+                    kind="rockfall",
+                    height=MAP_H,
+                    highlight_idx=highlight_idx,
+                    center_override=center_override,
+                )
+                if isinstance(rock_map_state, dict):
+                    last = rock_map_state.get("last_object_clicked")
+                    rock_meta = st.session_state.get("rockfall_points_meta", [])
+                    if (
+                        isinstance(last, dict)
+                        and "lat" in last
+                        and "lng" in last
+                        and rock_meta
+                    ):
+                        lat0 = float(last["lat"])
+                        lon0 = float(last["lng"])
+                        best = None
+                        best_d = None
+                        for p in rock_meta:
+                            d = abs(float(p["lat"]) - lat0) + abs(float(p["lon"]) - lon0)
+                            if best_d is None or d < best_d:
+                                best_d = d
+                                best = p
+                        if best is not None and best_d is not None and best_d < 0.002:
+                            st.session_state["selected_acc_meta"] = None
+                            st.session_state["selected_acc_photo_path"] = None
+                            st.session_state["selected_acc_year"] = None
+                            st.session_state["selected_bus_meta"] = None
+                            name = best.get("name", "")
+                            photo = best.get("photo", None)
+                            best_idx = int(best.get("idx", 0))
+                            st.session_state["selected_rock_idx"] = best_idx
+                            st.session_state["selected_rockfall_meta"] = _rockfall_meta_text(
+                                best
+                            )
+                            st.session_state["selected_rockfall_photo_path"] = (
+                                str(photo) if photo else None
+                            )
 
         with right_detail:
             _render_photo_detail_panel("rockfall")
@@ -2606,7 +2942,7 @@ if show_graphs:
                             f"{year}년 월별 교통단속 건수",
                             GRAPH_CHART_H,
                         )
-                        st.vega_lite_chart(plot_df, spec, use_container_width=True)
+                        st.vega_lite_chart(plot_df, spec, width="stretch")
                     else:
                         month = st.selectbox(
                             "월 선택",
@@ -2630,7 +2966,7 @@ if show_graphs:
                             f"{month}월 연도별 교통단속 건수",
                             GRAPH_CHART_H,
                         )
-                        st.vega_lite_chart(plot_df, spec, use_container_width=True)
+                        st.vega_lite_chart(plot_df, spec, width="stretch")
             st.write("")
             st.write(
                 "교통단속 통계 결과\n\n"
@@ -2694,7 +3030,7 @@ if show_graphs:
                         spec = _vega_weather_passenger_spec(
                             "월", f"{year}년 월별 강수량/여객수", GRAPH_CHART_H
                         )
-                        st.vega_lite_chart(plot_df, spec, use_container_width=True)
+                        st.vega_lite_chart(plot_df, spec, width="stretch")
                     else:
                         month = st.selectbox(
                             "월 선택",
@@ -2718,7 +3054,7 @@ if show_graphs:
                         spec = _vega_weather_passenger_spec(
                             "연도", f"{month}월 연도별 강수량/여객수", GRAPH_CHART_H
                         )
-                        st.vega_lite_chart(plot_df, spec, use_container_width=True)
+                        st.vega_lite_chart(plot_df, spec, width="stretch")
             st.write("")
             st.write(
                 "강수량 및 입도객 수 통계 결과\n\n"
@@ -2839,7 +3175,7 @@ if show_graphs:
                         ],
                         "config": _vega_base_config(),
                     }
-                st.vega_lite_chart(plot_df, spec, use_container_width=True)
+                st.vega_lite_chart(plot_df, spec, width="stretch")
             st.write("")
             st.write(
                 "입출도객 수 통계 결과\n\n"
