@@ -2483,6 +2483,7 @@ with c1:
         <div class="bar-label">
           <div class="bar-label-wrap">
             <span>운항통제</span>
+            <span class="bar-sub">(건수)</span>
             <span class="help-pop">
               <span class="help-pop-btn">?</span>
               <span class="help-pop-body">
@@ -2503,6 +2504,7 @@ with c1:
         <div class="bar-label">
           <div class="bar-label-wrap">
             <span>결항</span>
+            <span class="bar-sub">(건수)</span>
             <span class="help-pop">
               <span class="help-pop-btn">?</span>
               <span class="help-pop-body">
@@ -2523,6 +2525,7 @@ with c1:
         <div class="bar-label">
           <div class="bar-label-wrap">
             <span>시간변경</span>
+            <span class="bar-sub">(건수)</span>
             <span class="help-pop">
               <span class="help-pop-btn">?</span>
               <span class="help-pop-body">
