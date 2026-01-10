@@ -262,10 +262,10 @@ div[data-testid="stDialog"] img { max-height: 86vh; width: 100%; object-fit: con
 /* Tooltip (Help Pop) */
 .help-pop {
   position: relative;
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
 }
-.help-pop summary {
-  list-style: none;
+.help-pop-btn {
   width: 18px;
   height: 18px;
   border-radius: 50%;
@@ -275,11 +275,8 @@ div[data-testid="stDialog"] img { max-height: 86vh; width: 100%; object-fit: con
   display: flex;
   align-items: center;
   justify-content: center;
-  cursor: pointer;
+  cursor: default;
   background: #ffffff;
-}
-.help-pop summary::-webkit-details-marker {
-  display: none;
 }
 .help-pop-body {
   display: none;
@@ -298,7 +295,7 @@ div[data-testid="stDialog"] img { max-height: 86vh; width: 100%; object-fit: con
   box-shadow: 0 6px 16px rgba(17, 24, 39, 0.08);
   z-index: 100;
 }
-.help-pop[open] .help-pop-body {
+.help-pop:hover .help-pop-body {
   display: block;
 }
 
@@ -1359,7 +1356,11 @@ def _vega_bar_spec(x_field: str, y_field: str, title: str, height: int):
         },
         "encoding": {
             "x": {"field": x_field, "type": "ordinal", "axis": {"labelAngle": 0}},
-            "y": {"field": y_field, "type": "quantitative"},
+            "y": {
+                "field": y_field,
+                "type": "quantitative",
+                "axis": {"title": f"{y_field}(건)"},
+            },
             "tooltip": [
                 {"field": x_field, "type": "ordinal"},
                 {"field": y_field, "type": "quantitative"},
@@ -1409,7 +1410,7 @@ def _vega_weather_passenger_spec(x_field: str, title: str, height: int):
                 },
             },
             {
-                "transform": [{"calculate": "'월 입도객수'", "as": "시리즈"}],
+                "transform": [{"calculate": "'월 입도객수(명)'", "as": "시리즈"}],
                 "mark": {
                     "type": "line",
                     "color": "#2CA02C",
@@ -1421,13 +1422,13 @@ def _vega_weather_passenger_spec(x_field: str, title: str, height: int):
                     "y": {
                         "field": "입도",
                         "type": "quantitative",
-                        "axis": {"title": "여객수", "orient": "right"},
+                        "axis": {"title": "여객수(명)", "orient": "right"},
                     },
                     "color": {
                         "field": "시리즈",
                         "type": "nominal",
                         "scale": {
-                            "domain": ["월 입도객수", "월 출도객수"],
+                            "domain": ["월 입도객수(명)", "월 출도객수(명)"],
                             "range": ["#2CA02C", "#D62728"],
                         },
                         "legend": {
@@ -1448,7 +1449,7 @@ def _vega_weather_passenger_spec(x_field: str, title: str, height: int):
                 },
             },
             {
-                "transform": [{"calculate": "'월 출도객수'", "as": "시리즈"}],
+                "transform": [{"calculate": "'월 출도객수(명)'", "as": "시리즈"}],
                 "mark": {
                     "type": "line",
                     "color": "#E45756",
@@ -1466,7 +1467,7 @@ def _vega_weather_passenger_spec(x_field: str, title: str, height: int):
                         "field": "시리즈",
                         "type": "nominal",
                         "scale": {
-                            "domain": ["월 입도객수", "월 출도객수"],
+                            "domain": ["월 입도객수(명)", "월 출도객수(명)"],
                             "range": ["#2CA02C", "#D62728"],
                         },
                         "legend": None,
@@ -1501,7 +1502,7 @@ def _vega_bar_color_spec(
             "y": {
                 "field": y_field,
                 "type": "quantitative",
-                "axis": {"title": "여객수"},
+                "axis": {"title": "여객수(명)"},
             },
             "color": {
                 "field": color_field,
@@ -1557,7 +1558,11 @@ def _vega_bar_spec(x_field: str, y_field: str, title: str, height: int):
         },
         "encoding": {
             "x": {"field": x_field, "type": "ordinal", "axis": {"labelAngle": 0}},
-            "y": {"field": y_field, "type": "quantitative"},
+            "y": {
+                "field": y_field,
+                "type": "quantitative",
+                "axis": {"title": f"{y_field}(건)"},
+            },
             "tooltip": [
                 {"field": x_field, "type": "ordinal"},
                 {"field": y_field, "type": "quantitative"},
@@ -1607,7 +1612,7 @@ def _vega_weather_passenger_spec(x_field: str, title: str, height: int):
                 },
             },
             {
-                "transform": [{"calculate": "'월 입도객수'", "as": "시리즈"}],
+                "transform": [{"calculate": "'월 입도객수(명)'", "as": "시리즈"}],
                 "mark": {
                     "type": "line",
                     "color": "#2CA02C",
@@ -1619,13 +1624,13 @@ def _vega_weather_passenger_spec(x_field: str, title: str, height: int):
                     "y": {
                         "field": "입도",
                         "type": "quantitative",
-                        "axis": {"title": "여객수", "orient": "right"},
+                        "axis": {"title": "여객수(명)", "orient": "right"},
                     },
                     "color": {
                         "field": "시리즈",
                         "type": "nominal",
                         "scale": {
-                            "domain": ["월 입도객수", "월 출도객수"],
+                            "domain": ["월 입도객수(명)", "월 출도객수(명)"],
                             "range": ["#2CA02C", "#D62728"],
                         },
                         "legend": {
@@ -1646,7 +1651,7 @@ def _vega_weather_passenger_spec(x_field: str, title: str, height: int):
                 },
             },
             {
-                "transform": [{"calculate": "'월 출도객수'", "as": "시리즈"}],
+                "transform": [{"calculate": "'월 출도객수(명)'", "as": "시리즈"}],
                 "mark": {
                     "type": "line",
                     "color": "#E45756",
@@ -1664,7 +1669,7 @@ def _vega_weather_passenger_spec(x_field: str, title: str, height: int):
                         "field": "시리즈",
                         "type": "nominal",
                         "scale": {
-                            "domain": ["월 입도객수", "월 출도객수"],
+                            "domain": ["월 입도객수(명)", "월 출도객수(명)"],
                             "range": ["#2CA02C", "#D62728"],
                         },
                         "legend": None,
@@ -1699,7 +1704,7 @@ def _vega_bar_color_spec(
             "y": {
                 "field": y_field,
                 "type": "quantitative",
-                "axis": {"title": "여객수"},
+                "axis": {"title": "여객수(명)"},
             },
             "color": {
                 "field": color_field,
@@ -2361,6 +2366,13 @@ def _pct(count: int, total: int) -> int:
         return 0
     return int(round(count / total * 100))
 
+
+def _bar_pct(count: int, total: int, min_pct: int = 6) -> int:
+    if total <= 0 or count <= 0:
+        return 0
+    pct = int(round(count / total * 100))
+    return max(pct, min_pct)
+
 # 1. 각 항목의 건수 가져오기
 sea_arrive = sms_counts["입항"]
 sea_depart = sms_counts["출항"]
@@ -2373,11 +2385,11 @@ sea_max_val = max(sea_arrive, sea_depart, sea_control, sea_cancel, sea_change)
 if sea_max_val == 0:
     sea_max_val = 1
 
-sea_arrive_pct = _pct(sea_arrive, sea_max_val)
-sea_depart_pct = _pct(sea_depart, sea_max_val)
-sea_control_pct = _pct(sea_control, sea_max_val)
-sea_cancel_pct = _pct(sea_cancel, sea_max_val)
-sea_change_pct = _pct(sea_change, sea_max_val)
+sea_arrive_pct = _bar_pct(sea_arrive, sea_max_val)
+sea_depart_pct = _bar_pct(sea_depart, sea_max_val)
+sea_control_pct = _bar_pct(sea_control, sea_max_val)
+sea_cancel_pct = _bar_pct(sea_cancel, sea_max_val)
+sea_change_pct = _bar_pct(sea_change, sea_max_val)
 
 # 2. 내부 분할(선박/사람) 비율은 해당 항목의 합계를 기준으로 계산 (이건 기존 유지)
 sea_arrive_ship = sms_breakdown["입항"]["선박"]
@@ -2426,13 +2438,13 @@ with c1:
           <div class="bar-label-wrap">
             <span>입항</span>
             <span class="bar-sub">(선박/사람)</span>
-            <details class="help-pop">
-              <summary>?</summary>
-              <div class="help-pop-body">
+            <span class="help-pop">
+              <span class="help-pop-btn">?</span>
+              <span class="help-pop-body">
                 입항 알림 합계: <b>{sea_arrive:,}건</b><br/>
-                (선박: {sea_arrive_ship}, 사람: {sea_arrive_people})
-              </div>
-            </details>
+                선박: {sea_arrive_ship}건, 사람: {sea_arrive_people}명
+              </span>
+            </span>
           </div>
         </div>
         <div class="bar-track">
@@ -2449,13 +2461,13 @@ with c1:
           <div class="bar-label-wrap">
             <span>출항</span>
             <span class="bar-sub">(선박/사람)</span>
-            <details class="help-pop">
-              <summary>?</summary>
-              <div class="help-pop-body">
+            <span class="help-pop">
+              <span class="help-pop-btn">?</span>
+              <span class="help-pop-body">
                 출항 알림 합계: <b>{sea_depart:,}건</b><br/>
-                (선박: {sea_depart_ship}, 사람: {sea_depart_people})
-              </div>
-            </details>
+                선박: {sea_depart_ship}건, 사람: {sea_depart_people}명
+              </span>
+            </span>
           </div>
         </div>
         <div class="bar-track">
@@ -2471,10 +2483,13 @@ with c1:
         <div class="bar-label">
           <div class="bar-label-wrap">
             <span>운항통제</span>
-            <details class="help-pop">
-              <summary>?</summary>
-              <div class="help-pop-body">기상 악화 등으로 통제된 알림 수입니다.</div>
-            </details>
+            <span class="help-pop">
+              <span class="help-pop-btn">?</span>
+              <span class="help-pop-body">
+                기상 악화 등으로 통제된 알림 수입니다.<br/>
+                배 운항통제 건수: {sea_control:,}건
+              </span>
+            </span>
           </div>
         </div>
         <div class="bar-track">
@@ -2488,10 +2503,13 @@ with c1:
         <div class="bar-label">
           <div class="bar-label-wrap">
             <span>결항</span>
-            <details class="help-pop">
-              <summary>?</summary>
-              <div class="help-pop-body">기상 또는 점검 사유로 취소된 알림 수입니다.</div>
-            </details>
+            <span class="help-pop">
+              <span class="help-pop-btn">?</span>
+              <span class="help-pop-body">
+                기상 또는 점검 사유로 취소된 알림 수입니다.<br/>
+                배 결항 건수: {sea_cancel:,}건
+              </span>
+            </span>
           </div>
         </div>
         <div class="bar-track">
@@ -2505,10 +2523,13 @@ with c1:
         <div class="bar-label">
           <div class="bar-label-wrap">
             <span>시간변경</span>
-            <details class="help-pop">
-              <summary>?</summary>
-              <div class="help-pop-body">출항/입항 시간이 변경된 알림 수입니다.</div>
-            </details>
+            <span class="help-pop">
+              <span class="help-pop-btn">?</span>
+              <span class="help-pop-body">
+                출항/입항 시간이 변경된 알림 수입니다.<br/>
+                배 시간변경 건수: {sea_change:,}건
+              </span>
+            </span>
           </div>
         </div>
         <div class="bar-track">
@@ -2748,14 +2769,18 @@ with st.container(border=True, height=TOP_CARD_H):
                 if st.session_state["view_mode"] == "list":
                     if st.button(
                         "🗺️ 지도에서 보기",
-                        width="stretch",
+                        use_container_width=True,
                         type="primary",
                         key="acc_view_map",
                     ):
                         st.session_state["view_mode"] = "map"
                         st.rerun()
                 else:
-                    if st.button("⬅ 목록으로", width="stretch", key="acc_view_list"):
+                    if st.button(
+                        "⬅ 목록으로",
+                        use_container_width=True,
+                        key="acc_view_list",
+                    ):
                         st.session_state["view_mode"] = "list"
                         st.rerun()
 
@@ -2839,7 +2864,7 @@ with st.container(border=True, height=TOP_CARD_H):
                                     if st.button(
                                         "위치 확인 >",
                                         key=f"btn_go_map_{idx}",
-                                        width="stretch",
+                                        use_container_width=True,
                                     ):
                                         _set_selected_accident(df_acc_list, idx)
                                         st.session_state["selected_acc_idx"] = int(idx)
@@ -2913,14 +2938,18 @@ with st.container(border=True, height=TOP_CARD_H):
                 if st.session_state["rock_view_mode"] == "list":
                     if st.button(
                         "🗺️ 지도에서 보기",
-                        width="stretch",
+                        use_container_width=True,
                         type="primary",
                         key="rock_view_map",
                     ):
                         st.session_state["rock_view_mode"] = "map"
                         st.rerun()
                 else:
-                    if st.button("⬅ 목록으로", width="stretch", key="rock_view_list"):
+                    if st.button(
+                        "⬅ 목록으로",
+                        use_container_width=True,
+                        key="rock_view_list",
+                    ):
                         st.session_state["rock_view_mode"] = "list"
                         st.rerun()
 
@@ -3021,7 +3050,7 @@ with st.container(border=True, height=TOP_CARD_H):
                                     if st.button(
                                         "위치 확인 >",
                                         key=f"btn_rock_map_{item_idx}",
-                                        width="stretch",
+                                        use_container_width=True,
                                     ):
                                         st.session_state["selected_acc_meta"] = None
                                         st.session_state["selected_acc_photo_path"] = None
@@ -3098,7 +3127,7 @@ if show_graphs:
     with g1:
         with st.container(border=True, height=GRAPH_CARD_H):
             st.markdown(
-                '<div class="card-title">단속건수 통계</div>',
+                '<div class="card-title">교통위반 단속건수 통계</div>',
                 unsafe_allow_html=True,
             )
             df_counts = load_enforcement_counts_csv()
@@ -3139,7 +3168,7 @@ if show_graphs:
                             f"{year}년 월별 교통단속 건수",
                             GRAPH_CHART_H,
                         )
-                        st.vega_lite_chart(plot_df, spec, width="stretch")
+                        st.vega_lite_chart(plot_df, spec, use_container_width=True)
                     else:
                         month = st.selectbox(
                             "월 선택",
@@ -3163,7 +3192,7 @@ if show_graphs:
                             f"{month}월 연도별 교통단속 건수",
                             GRAPH_CHART_H,
                         )
-                        st.vega_lite_chart(plot_df, spec, width="stretch")
+                        st.vega_lite_chart(plot_df, spec, use_container_width=True)
             st.write("")
             st.write(
                 "교통단속 통계 결과\n\n"
@@ -3227,7 +3256,7 @@ if show_graphs:
                         spec = _vega_weather_passenger_spec(
                             "월", f"{year}년 월별 강수량/여객수", GRAPH_CHART_H
                         )
-                        st.vega_lite_chart(plot_df, spec, width="stretch")
+                        st.vega_lite_chart(plot_df, spec, use_container_width=True)
                     else:
                         month = st.selectbox(
                             "월 선택",
@@ -3251,7 +3280,7 @@ if show_graphs:
                         spec = _vega_weather_passenger_spec(
                             "연도", f"{month}월 연도별 강수량/여객수", GRAPH_CHART_H
                         )
-                        st.vega_lite_chart(plot_df, spec, width="stretch")
+                        st.vega_lite_chart(plot_df, spec, use_container_width=True)
             st.write("")
             st.write(
                 "강수량 및 입도객 수 통계 결과\n\n"
@@ -3372,7 +3401,7 @@ if show_graphs:
                         ],
                         "config": _vega_base_config(),
                     }
-                st.vega_lite_chart(plot_df, spec, width="stretch")
+                st.vega_lite_chart(plot_df, spec, use_container_width=True)
             st.write("")
             st.write(
                 "입출도객 수 통계 결과\n\n"
