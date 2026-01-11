@@ -116,6 +116,54 @@ st.markdown(
   font-size: 1.05rem;
 }
 
+.bus-detail {
+  border: 1px solid #e8ebf2;
+  background: #f8f9fc;
+  border-radius: 14px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+}
+.bus-detail-title {
+  font-weight: 800;
+  font-size: 1.05rem;
+  color: #1f1f1f;
+}
+.bus-detail-sub {
+  color: #666;
+  font-size: 0.85rem;
+  margin-top: 4px;
+}
+.bus-route-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 8px;
+}
+.bus-route-card {
+  border: 1px solid #e6e9f2;
+  border-left: 5px solid #9aa3b2;
+  border-radius: 12px;
+  padding: 10px 10px 9px 10px;
+  background: #ffffff;
+}
+.bus-route-id {
+  font-weight: 700;
+  color: #20232a;
+}
+.bus-route-desc {
+  color: #555;
+  font-size: 0.82rem;
+  margin-top: 2px;
+  line-height: 1.3;
+}
+.bus-route-empty {
+  border: 1px dashed #d0d4de;
+  color: #808899;
+  border-radius: 12px;
+  padding: 10px;
+  background: #fafbfe;
+  font-size: 0.9rem;
+}
+
 /* UI 요소 z-index 조정 */
 div[data-baseweb="select"] { position: relative; z-index: 3000; }
 div[data-baseweb="popover"] { z-index: 4000; }
@@ -787,7 +835,7 @@ def _bus_route_defs():
         {
             "id": "22",
             "name": "22노선 (천부→현포→태하→남양→사동항→도동→저동여객선터미널→관음도→천부)",
-            "color": "#ff8c42",
+            "color": "#2a9d8f",
             "stops": [
                 "천부정류장",
                 "현포",
@@ -801,6 +849,61 @@ def _bus_route_defs():
             ],
         },
     ]
+
+
+def _polyline_segments(points: list[tuple[float, float]]):
+    segments = []
+    total = 0.0
+    for (lat1, lon1), (lat2, lon2) in zip(points, points[1:]):
+        seg_len = math.hypot(lat2 - lat1, lon2 - lon1)
+        segments.append((seg_len, (lat1, lon1), (lat2, lon2)))
+        total += seg_len
+    return total, segments
+
+
+def _point_on_segments(segments, distance: float):
+    remaining = distance
+    for seg_len, (lat1, lon1), (lat2, lon2) in segments:
+        if seg_len <= 0:
+            continue
+        if remaining <= seg_len:
+            t = remaining / seg_len
+            return (lat1 + (lat2 - lat1) * t, lon1 + (lon2 - lon1) * t)
+        remaining -= seg_len
+    if segments:
+        return segments[-1][2]
+    return None
+
+
+def _simulate_bus_positions(routes, per_route: int = 2):
+    positions = []
+    for route in routes:
+        points = route.get("points", [])
+        if len(points) < 2:
+            continue
+        total, segments = _polyline_segments(points)
+        if total <= 0:
+            continue
+        route_id = str(route.get("id", "")).strip()
+        jitter = (sum(ord(c) for c in route_id) % 7) * 0.01
+        for i in range(per_route):
+            frac = (i + 1) / (per_route + 1) + jitter
+            frac = frac % 1.0
+            distance = total * frac
+            point = _point_on_segments(segments, distance)
+            if point is None:
+                continue
+            lat, lon = point
+            positions.append(
+                {
+                    "route_id": route_id,
+                    "route_name": route.get("name", ""),
+                    "lat": lat,
+                    "lon": lon,
+                    "index": i + 1,
+                }
+            )
+    return positions
 
 
 @st.cache_data(show_spinner=False)
@@ -898,6 +1001,7 @@ def render_ulleung_folium_map(
     accident_df: pd.DataFrame | None = None,
     highlight_idx: int | None = None,
     center_override: tuple[float, float] | None = None,
+    selected_route_id: str | None = None,
 ):
     """울릉군 Folium 지도 렌더."""
 
@@ -1009,12 +1113,7 @@ def render_ulleung_folium_map(
         color = "blue"
         for stop in bus_stops:
             name = stop.get("name", "(이름 없음)")
-            routes_txt = (
-                ", ".join(stop.get("routes", []))
-                if stop.get("routes")
-                else "경유 노선 정보 없음"
-            )
-            label = f"정류장 : {name}<br/>경유 노선 : {routes_txt}"
+            label = f"정류장 : {name}"
             sample_points.append((stop["lat"], stop["lon"], label))
     else:
         sample_points = []
@@ -1022,8 +1121,9 @@ def render_ulleung_folium_map(
 
     fg = folium.FeatureGroup(name=kind)
 
-    # 마커 클러스터 사용(사고/낙석은 항상 클러스터, 버스는 전체 표시를 위해 클러스터 미사용)
+    # 마커 클러스터 사용(사고/낙석은 항상 클러스터)
     marker_parent = fg
+    bus_marker_parent = fg
     marker_points = sample_points
     if kind == "bus":
         # bus는 경유 노선 색상 기반으로 마커 색을 나눔
@@ -1035,14 +1135,17 @@ def render_ulleung_folium_map(
                 if stop.get("routes")
                 else "경유 노선 정보 없음"
             )
-            label = f"정류장 : {stop['name']}<br/>경유 노선 : {routes_txt}"
+            label = f"정류장 : {stop['name']}"
             first_route = stop.get("routes", [None])[0] if stop.get("routes") else None
             color_for_stop = routes_defs.get(first_route, "#666666")
             marker_points.append((stop["lat"], stop["lon"], label, color_for_stop))
 
-    if MarkerCluster is not None and kind not in {"bus"}:
+    if MarkerCluster is not None:
         if kind in {"accident", "rockfall"} or len(marker_points) > 50:
             marker_parent = MarkerCluster(name=f"{kind}_cluster").add_to(fg)
+        if kind == "bus":
+            marker_parent = MarkerCluster(name="bus_stops_cluster").add_to(fg)
+            bus_marker_parent = MarkerCluster(name="bus_cluster").add_to(fg)
 
     for mp in marker_points:
         if kind == "bus":
@@ -1119,13 +1222,105 @@ def render_ulleung_folium_map(
             pts = r.get("points", [])
             if len(pts) < 2:
                 continue
+            is_selected = selected_route_id and r.get("id") == selected_route_id
+            if is_selected:
+                # 강조 라인: 흰색 외곽 + 원래 색상으로 두껍게
+                folium.PolyLine(
+                    pts,
+                    color="#ffffff",
+                    weight=10,
+                    opacity=0.9,
+                ).add_to(fg)
             folium.PolyLine(
                 pts,
                 color=r.get("color", "blue"),
-                weight=6,
-                opacity=0.65,
+                weight=8 if is_selected else 3,
+                opacity=0.95 if is_selected else 0.25,
                 tooltip=r.get("name", ""),
             ).add_to(fg)
+        bus_positions = _simulate_bus_positions(routes, per_route=1)
+        selected_bus_pos = None
+        if selected_route_id:
+            for bus in bus_positions:
+                if bus.get("route_id") == selected_route_id:
+                    selected_bus_pos = bus
+                    break
+        if selected_bus_pos is None and selected_route_id:
+            for route in routes:
+                if route.get("id") == selected_route_id:
+                    pts = route.get("points", [])
+                    total, segments = _polyline_segments(pts)
+                    if total > 0:
+                        midpoint = _point_on_segments(segments, total * 0.5)
+                        if midpoint:
+                            selected_bus_pos = {
+                                "route_id": selected_route_id,
+                                "lat": midpoint[0],
+                                "lon": midpoint[1],
+                            }
+                    break
+        if selected_bus_pos and DivIcon is not None:
+            pulse_css = """
+            <div style="
+                width: 18px;
+                height: 18px;
+                background-color: rgba(229, 57, 53, 0.7);
+                border-radius: 50%;
+                box-shadow: 0 0 0 0 rgba(229, 57, 53, 0.8);
+                animation: pulse-red 1.4s infinite;
+                "></div>
+            <style>
+                @keyframes pulse-red {
+                    0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(229, 57, 53, 0.8); }
+                    70% { transform: scale(1); box-shadow: 0 0 0 18px rgba(229, 57, 53, 0); }
+                    100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(229, 57, 53, 0); }
+                }
+            </style>
+            """
+            folium.Marker(
+                location=(selected_bus_pos["lat"], selected_bus_pos["lon"]),
+                icon=DivIcon(
+                    icon_size=(18, 18),
+                    icon_anchor=(9, 9),
+                    html=pulse_css,
+                ),
+                tooltip="현재 위치",
+            ).add_to(fg)
+        for bus in bus_positions:
+            tooltip = f"가상 버스 {bus['route_id']}노선"
+            if DivIcon is not None:
+                bus_svg = """
+                <svg width="30" height="20" viewBox="0 0 30 20" xmlns="http://www.w3.org/2000/svg">
+                  <rect x="1.5" y="2.5" width="27" height="13" rx="4" fill="#ffca3a" stroke="#1f1f1f" stroke-width="1.5"/>
+                  <rect x="4" y="5" width="9" height="5" rx="1.5" fill="#f6f7fb" stroke="#1f1f1f" stroke-width="0.8"/>
+                  <rect x="14.5" y="5" width="11" height="5" rx="1.5" fill="#f6f7fb" stroke="#1f1f1f" stroke-width="0.8"/>
+                  <rect x="3.5" y="10.5" width="22" height="2" rx="1" fill="#1f1f1f" opacity="0.12"/>
+                  <circle cx="9" cy="16.5" r="2" fill="#1f1f1f"/>
+                  <circle cx="21.5" cy="16.5" r="2" fill="#1f1f1f"/>
+                  <circle cx="9" cy="16.5" r="0.8" fill="#f6f7fb"/>
+                  <circle cx="21.5" cy="16.5" r="0.8" fill="#f6f7fb"/>
+                </svg>
+                """
+                folium.Marker(
+                    location=(bus["lat"], bus["lon"]),
+                    icon=DivIcon(
+                        icon_size=(28, 18),
+                        icon_anchor=(14, 9),
+                        html=bus_svg,
+                    ),
+                    tooltip=tooltip,
+                ).add_to(bus_marker_parent)
+            else:
+                folium.CircleMarker(
+                    location=(bus["lat"], bus["lon"]),
+                    radius=6,
+                    color="#222222",
+                    weight=2,
+                    fill=True,
+                    fill_color="#ffd54a",
+                    fill_opacity=0.95,
+                    tooltip=tooltip,
+                ).add_to(bus_marker_parent)
 
     fg.add_to(m)
 
@@ -2077,6 +2272,11 @@ if "selected_rockfall_photo_path" not in st.session_state:
     st.session_state["selected_rockfall_photo_path"] = None
 if "selected_bus_meta" not in st.session_state:
     st.session_state["selected_bus_meta"] = None
+if "selected_bus_route_id" not in st.session_state:
+    route_defs = _bus_route_defs()
+    st.session_state["selected_bus_route_id"] = (
+        route_defs[0]["id"] if route_defs else None
+    )
 if "selected_rock_idx" not in st.session_state:
     st.session_state["selected_rock_idx"] = None
 if "rock_view_mode" not in st.session_state:
@@ -2694,7 +2894,11 @@ with st.container(border=True, height=TOP_CARD_H):
         left_main, right_detail = st.columns([2.2, 1], gap="large")
         with left_main:
             st.caption("울릉군 버스 노선/정류장")
-            bus_map_state = render_ulleung_folium_map(kind="bus", height=MAP_H)
+            bus_map_state = render_ulleung_folium_map(
+                kind="bus",
+                height=MAP_H,
+                selected_route_id=st.session_state.get("selected_bus_route_id"),
+            )
             if isinstance(bus_map_state, dict):
                 last = bus_map_state.get("last_object_clicked")
                 bus_meta = st.session_state.get("bus_stops_meta", [])
@@ -2714,20 +2918,27 @@ with st.container(border=True, height=TOP_CARD_H):
                         st.session_state["selected_rockfall_meta"] = None
                         st.session_state["selected_rockfall_photo_path"] = None
                         name = best.get("name", "")
-                        routes_txt = (
-                            ", ".join(best.get("routes", []))
-                            if best.get("routes")
-                            else "노선 정보 없음"
-                        )
-                        st.session_state["selected_bus_meta"] = (
-                            f"정류장 : {name}\n경유 노선 : {routes_txt}"
-                        )
+                        st.session_state["selected_bus_meta"] = {
+                            "name": name,
+                            "routes": best.get("routes", []) or [],
+                        }
             st.caption(f"조회기준: {datetime.now():%Y-%m-%d %H:%M}")
 
         with right_detail:
             routes_defs = {r["id"]: r for r in _bus_route_defs()}
             route_22 = routes_defs.get("22")
             route_3 = routes_defs.get("3")
+            route_options = list(routes_defs.keys())
+            if route_options:
+                current_route = st.session_state.get("selected_bus_route_id")
+                if current_route not in route_options:
+                    current_route = route_options[0]
+                st.session_state["selected_bus_route_id"] = st.selectbox(
+                    "현재 노선 선택",
+                    route_options,
+                    index=route_options.index(current_route),
+                    format_func=lambda rid: routes_defs[rid]["name"],
+                )
 
             def _route_dir_label(route):
                 if not route or not route.get("stops"):
@@ -2754,7 +2965,60 @@ with st.container(border=True, height=TOP_CARD_H):
                 st.markdown('<div class="card-title">정류장 상세</div>', unsafe_allow_html=True)
                 sel_bus_meta = st.session_state.get("selected_bus_meta")
                 if sel_bus_meta:
-                    st.markdown(str(sel_bus_meta).replace("\n", "  \n"))
+                    route_defs = {r["id"]: r for r in _bus_route_defs()}
+                    if isinstance(sel_bus_meta, dict):
+                        stop_name = sel_bus_meta.get("name", "")
+                        routes = sel_bus_meta.get("routes", []) or []
+                    else:
+                        stop_name = ""
+                        routes = []
+                        for line in str(sel_bus_meta).splitlines():
+                            if "정류장" in line:
+                                stop_name = line.split(":", 1)[-1].strip()
+                            if "경유 노선" in line:
+                                raw = line.split(":", 1)[-1].strip()
+                                if "없음" not in raw:
+                                    routes = [r.strip() for r in raw.split(",") if r.strip()]
+
+                    st.markdown(
+                        f"""
+<div class="bus-detail">
+  <div class="bus-detail-title">{stop_name or "정류장 정보 없음"}</div>
+  <div class="bus-detail-sub">경유 노선 {len(routes)}개</div>
+</div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    if routes:
+                        cards_html = []
+                        for route_name in routes:
+                            match = re.match(r"^(\d+)\s*노선\s*(?:\((.*)\))?$", route_name)
+                            route_id = match.group(1) if match else ""
+                            route_desc = match.group(2).strip() if match and match.group(2) else ""
+                            if not route_desc and route_id and route_name != f"{route_id}노선":
+                                route_desc = route_name
+                            color = (
+                                route_defs.get(route_id, {}).get("color", "#9aa3b2")
+                                if route_id
+                                else "#9aa3b2"
+                            )
+                            cards_html.append(
+                                f"""
+<div class="bus-route-card" style="border-left-color: {color};">
+  <div class="bus-route-id">{route_id + "노선" if route_id else route_name}</div>
+  <div class="bus-route-desc">{route_desc or route_name}</div>
+</div>
+                                """
+                            )
+                        st.markdown(
+                            f'<div class="bus-route-grid">{"".join(cards_html)}</div>',
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.markdown(
+                            '<div class="bus-route-empty">경유 노선 정보가 없습니다.</div>',
+                            unsafe_allow_html=True,
+                        )
                 else:
                     st.markdown("- 지도에서 정류장을 클릭하면 상세 정보가 표시됩니다.")
 
