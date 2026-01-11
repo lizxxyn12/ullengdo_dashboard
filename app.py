@@ -926,62 +926,21 @@ def build_bus_routes():
     # 노선 정의에 포함된 정류장에 경유 노선 정보 채우기 + 라인 포인트 생성
     for route in _bus_route_defs():
         pts = []
-        loop_routes = {"1", "2", "5", "11", "22"}
-
-        if route["id"] in loop_routes and not df.empty:
-            # 섬 일주/왕복 노선은 모든 정류장을 각도 기준으로 정렬해 선을 그린다.
-            center_lat = df["lat"].mean()
-            center_lon = df["lon"].mean()
-
-            def angle(row):
-                return math.atan2(row["lat"] - center_lat, row["lon"] - center_lon)
-
-            df_sorted = df.copy()
-            df_sorted["ang"] = df_sorted.apply(angle, axis=1)
-            df_sorted = df_sorted.sort_values("ang").reset_index(drop=True)
-
-            # 시작점을 앵커 정류장 근처로 회전
-            anchor_match = _match_bus_stop(df, route["stops"][0])
-            start_idx = 0
-            if anchor_match:
-                ax, ay = anchor_match
-                best = None
-                best_d = None
-                for i, row in df_sorted.iterrows():
-                    d = abs(row["lat"] - ax) + abs(row["lon"] - ay)
-                    if best_d is None or d < best_d:
-                        best_d = d
-                        best = i
-                if best is not None:
-                    start_idx = best
-            rotated = pd.concat(
-                [df_sorted.iloc[start_idx:], df_sorted.iloc[:start_idx]]
-            )
-            pts = [
-                (float(r.lat), float(r.lon))
-                for r in rotated[["lat", "lon"]].itertuples()
-            ]
-
-            # 모든 정류장을 이 노선 경유로 표시
-            for key, info in stop_map.items():
-                info["routes"].append(route["name"])
-
-        else:
-            # 정의된 정류장 순서대로만 연결
-            for stop_name in route["stops"]:
-                match = _match_bus_stop(df, stop_name)
-                if match:
-                    lat, lon = match
-                    pts.append((lat, lon))
-                    key = _norm_text(stop_name)
-                    if key not in stop_map:
-                        stop_map[key] = {
-                            "name": stop_name,
-                            "lat": lat,
-                            "lon": lon,
-                            "routes": [],
-                        }
-                    stop_map[key]["routes"].append(route["name"])
+        # 정의된 정류장 순서대로만 연결 (정확 매칭)
+        for stop_name in route["stops"]:
+            match = _match_bus_stop(df, stop_name)
+            if match:
+                lat, lon = match
+                pts.append((lat, lon))
+                key = _norm_text(stop_name)
+                if key not in stop_map:
+                    stop_map[key] = {
+                        "name": stop_name,
+                        "lat": lat,
+                        "lon": lon,
+                        "routes": [],
+                    }
+                stop_map[key]["routes"].append(route["name"])
         routes.append(
             {
                 "id": route["id"],
@@ -1219,6 +1178,8 @@ def render_ulleung_folium_map(
     if kind == "bus":
         routes, _ = build_bus_routes()
         for r in routes:
+            if selected_route_id and r.get("id") != selected_route_id:
+                continue
             pts = r.get("points", [])
             if len(pts) < 2:
                 continue
@@ -1287,6 +1248,8 @@ def render_ulleung_folium_map(
                 tooltip="현재 위치",
             ).add_to(fg)
         for bus in bus_positions:
+            if selected_route_id and bus.get("route_id") != selected_route_id:
+                continue
             tooltip = f"가상 버스 {bus['route_id']}노선"
             if DivIcon is not None:
                 bus_svg = """
@@ -1347,11 +1310,14 @@ def render_ulleung_folium_map(
 
     # 지도 렌더 (가능하면 클릭 이벤트까지 받기)
     if st_folium is not None:
+        folium_key = f"folium_{requested_kind}"
+        if requested_kind == "bus":
+            folium_key = f"{folium_key}_{selected_route_id or 'all'}"
         return st_folium(
             m,
             height=height,
             width=None,
-            key=f"folium_{requested_kind}",
+            key=folium_key,
         )
 
     # streamlit-folium이 없으면 이벤트 없이 지도만 표시
@@ -2892,6 +2858,20 @@ with st.container(border=True, height=TOP_CARD_H):
     # [탭 1] 버스
     with t1:
         left_main, right_detail = st.columns([2.2, 1], gap="large")
+        routes_defs = {r["id"]: r for r in _bus_route_defs()}
+        route_options = list(routes_defs.keys())
+        with right_detail:
+            if route_options:
+                current_route = st.session_state.get("selected_bus_route_id")
+                if current_route not in route_options:
+                    current_route = route_options[0]
+                st.session_state["selected_bus_route_id"] = st.selectbox(
+                    "현재 노선 선택",
+                    route_options,
+                    index=route_options.index(current_route),
+                    format_func=lambda rid: routes_defs[rid]["name"],
+                )
+
         with left_main:
             st.caption("울릉군 버스 노선/정류장")
             bus_map_state = render_ulleung_folium_map(
@@ -2925,20 +2905,8 @@ with st.container(border=True, height=TOP_CARD_H):
             st.caption(f"조회기준: {datetime.now():%Y-%m-%d %H:%M}")
 
         with right_detail:
-            routes_defs = {r["id"]: r for r in _bus_route_defs()}
             route_22 = routes_defs.get("22")
             route_3 = routes_defs.get("3")
-            route_options = list(routes_defs.keys())
-            if route_options:
-                current_route = st.session_state.get("selected_bus_route_id")
-                if current_route not in route_options:
-                    current_route = route_options[0]
-                st.session_state["selected_bus_route_id"] = st.selectbox(
-                    "현재 노선 선택",
-                    route_options,
-                    index=route_options.index(current_route),
-                    format_func=lambda rid: routes_defs[rid]["name"],
-                )
 
             def _route_dir_label(route):
                 if not route or not route.get("stops"):
