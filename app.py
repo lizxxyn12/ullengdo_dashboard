@@ -1107,6 +1107,15 @@ def render_ulleung_folium_map(
                     "routes": ["샘플"],
                 },
             ]
+        if selected_route_id:
+            route_name_map = {r["id"]: r["name"] for r in _bus_route_defs()}
+            selected_route_name = route_name_map.get(selected_route_id)
+            if selected_route_name:
+                bus_stops = [
+                    s
+                    for s in bus_stops
+                    if selected_route_name in (s.get("routes") or [])
+                ]
         st.session_state["bus_stops_meta"] = bus_stops
 
         sample_points = []
@@ -1218,6 +1227,8 @@ def render_ulleung_folium_map(
     # 노선 라인(버스만 해당)
     if kind == "bus":
         routes, _ = build_bus_routes()
+        if selected_route_id:
+            routes = [r for r in routes if r.get("id") == selected_route_id]
         for r in routes:
             pts = r.get("points", [])
             if len(pts) < 2:
@@ -1238,7 +1249,9 @@ def render_ulleung_folium_map(
                 opacity=0.95 if is_selected else 0.25,
                 tooltip=r.get("name", ""),
             ).add_to(fg)
-        bus_positions = _simulate_bus_positions(routes, per_route=1)
+        bus_positions = _simulate_bus_positions(
+            routes, per_route=2 if selected_route_id else 1
+        )
         selected_bus_pos = None
         if selected_route_id:
             for bus in bus_positions:
