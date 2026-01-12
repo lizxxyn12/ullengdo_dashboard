@@ -180,9 +180,7 @@ div[data-testid="stDialog"] img { max-height: 86vh; width: 100%; object-fit: con
   border: 1px solid #ebedf3;
   border-radius: 22px;
   padding: 18px 18px 16px 18px;
-  height: 90%;
   box-sizing: border-box;
-  overflow-y: auto;
 }
 .r2-top {
   display: flex;
@@ -2619,11 +2617,8 @@ sea_depart_people_pct = 100 - sea_depart_ship_pct if sea_depart > 0 else 0
 st.write("")
 c1, c2 = st.columns(2, gap="large")
 
-# [수정] 카드 높이 조절
-ROW2_CARD_H = 420
-
 with c1:
-    with st.container(border=True, height=ROW2_CARD_H):
+    with st.container(border=True):
         if show_sea_notice:
             html = "\n".join(
                 line.lstrip()
@@ -2765,7 +2760,7 @@ with c1:
             st.caption("사이드바에서 해상공지 레이어가 꺼져있음")
 
 with c2:
-    with st.container(border=True, height=ROW2_CARD_H):
+    with st.container(border=True):
         if show_road_control:
             head_left, head_right = st.columns([1, 0.35])
             with head_left:
@@ -2821,12 +2816,10 @@ st.write("")
 if "view_mode" not in st.session_state:
     st.session_state["view_mode"] = "list"
 
-# 상단 2개 카드(좌/우) 영역 높이 고정
-TOP_CARD_H = 600  # 전체 카드 높이(px)
-PHOTO_H = 280  # 사진 영역 높이(px)
+# 상단 영역 높이 설정
 MAP_H = 360  # 지도 영역 높이(px)
 
-with st.container(border=True, height=TOP_CARD_H):
+with st.container(border=True):
     st.markdown('<div class="card-title">울릉군 지도</div>', unsafe_allow_html=True)
     st.caption("2019-2025년 울릉군 위치 데이터 기반")
 
@@ -2834,7 +2827,7 @@ with st.container(border=True, height=TOP_CARD_H):
     t1, t2, t3 = st.tabs(["버스 실시간 상황", "교통사고 지점", "낙석 발생 지점"])
 
     def _render_photo_detail_panel(key_suffix: str):
-        with st.container(border=True, height=TOP_CARD_H):
+        with st.container(border=True):
             st.markdown('<div class="card-title">사고 장소 사진</div>', unsafe_allow_html=True)
 
             sel_rock_photo = st.session_state.get("selected_rockfall_photo_path")
@@ -2843,7 +2836,7 @@ with st.container(border=True, height=TOP_CARD_H):
             sel_rock_meta = st.session_state.get("selected_rockfall_meta")
             sel_bus_meta = st.session_state.get("selected_bus_meta")
 
-            with st.container(height=PHOTO_H):
+            with st.container():
                 image_loaded = False
                 if sel_rock_photo:
                     try:
@@ -2960,7 +2953,7 @@ with st.container(border=True, height=TOP_CARD_H):
                 down = route["stops"][-1]
                 return f"상행 -> {up}, 하행 -> {down}"
 
-            with st.container(border=True, height=TOP_CARD_H):
+            with st.container(border=True):
                 st.markdown('<div class="card-title">버스 실시간 정보</div>', unsafe_allow_html=True)
                 st.markdown(
                     f"""
@@ -3070,7 +3063,7 @@ with st.container(border=True, height=TOP_CARD_H):
             else:
                 if st.session_state["view_mode"] == "list":
                     seen_keys = set()
-                    with st.container(height=TOP_CARD_H - 120, border=True):
+                    with st.container(border=True):
                         df_list_view = df_acc_list.copy()
                         if "year" in df_list_view.columns:
                             df_list_view["_year_sort"] = df_list_view["year"].fillna(0).astype(int)
@@ -3142,7 +3135,7 @@ with st.container(border=True, height=TOP_CARD_H):
                                 with c_btn:
                                     st.write("")
                                     if st.button(
-                                        "위치 확인 >",
+                                        "위치 확인",
                                         key=f"btn_go_map_{idx}",
                                         use_container_width=True,
                                     ):
@@ -3261,7 +3254,7 @@ with st.container(border=True, height=TOP_CARD_H):
                 if not rock_meta:
                     st.info("표시할 낙석 데이터가 없습니다.")
                 else:
-                    with st.container(height=TOP_CARD_H - 120, border=True):
+                    with st.container(border=True):
                         for item in rock_meta[:10]:
                             item_idx = int(item.get("idx", 0))
                             name = item.get("name", "위치 미상")
@@ -3328,7 +3321,7 @@ with st.container(border=True, height=TOP_CARD_H):
                                 with c_btn:
                                     st.write("")
                                     if st.button(
-                                        "위치 확인 >",
+                                        "위치 확인",
                                         key=f"btn_rock_map_{item_idx}",
                                         use_container_width=True,
                                     ):
@@ -3402,10 +3395,9 @@ if show_graphs:
 
     st.write("")
     g1, g2, g3 = st.columns(3, gap="large")
-    GRAPH_CARD_H = 680
     GRAPH_CHART_H = 360
     with g1:
-        with st.container(border=True, height=GRAPH_CARD_H):
+        with st.container(border=True):
             st.markdown(
                 '<div class="card-title">교통위반 단속건수 통계</div>',
                 unsafe_allow_html=True,
@@ -3494,7 +3486,7 @@ if show_graphs:
             )
 
     with g2:
-        with st.container(border=True, height=GRAPH_CARD_H):
+        with st.container(border=True):
             st.markdown(
                 '<div class="card-title">강수량 및 여객수 통계</div>',
                 unsafe_allow_html=True,
@@ -3578,7 +3570,7 @@ if show_graphs:
             )
 
     with g3:
-        with st.container(border=True, height=GRAPH_CARD_H):
+        with st.container(border=True):
             st.markdown(
                 '<div class="card-title">입/출도 성수기 · 비수기</div>',
                 unsafe_allow_html=True,
