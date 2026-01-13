@@ -1226,49 +1226,7 @@ def render_ulleung_folium_map(
                 popup=popup,
             ).add_to(marker_parent)
 
-    if kind in {"accident", "rockfall"} and highlight_idx is not None:
-        meta_key = "acc_points_meta" if kind == "accident" else "rockfall_points_meta"
-        pulse_color = "#ff0000" if kind == "accident" else "#ff8a00"
-        pulse_rgba = "255, 0, 0" if kind == "accident" else "255, 138, 0"
-        for p in st.session_state.get(meta_key, []):
-            if int(p.get("idx", -1)) == int(highlight_idx):
-                lat, lon = float(p["lat"]), float(p["lon"])
-                if DivIcon is not None:
-                    pulse_css = f"""
-                    <div style="
-                        width: 20px;
-                        height: 20px;
-                        background-color: rgba({pulse_rgba}, 0.6);
-                        border-radius: 50%;
-                        box-shadow: 0 0 0 0 rgba({pulse_rgba}, 0.7);
-                        animation: pulse-red 1.5s infinite;
-                        "></div>
-                    <style>
-                        @keyframes pulse-red {{
-                            0% {{ transform: scale(0.95); box-shadow: 0 0 0 0 rgba({pulse_rgba}, 0.7); }}
-                            70% {{ transform: scale(1); box-shadow: 0 0 0 20px rgba({pulse_rgba}, 0); }}
-                            100% {{ transform: scale(0.95); box-shadow: 0 0 0 0 rgba({pulse_rgba}, 0); }}
-                        }}
-                    </style>
-                    """
-                    folium.Marker(
-                        location=(lat, lon),
-                        icon=DivIcon(
-                            icon_size=(20, 20),
-                            icon_anchor=(10, 10),
-                            html=pulse_css,
-                        ),
-                    ).add_to(fg)
-                folium.CircleMarker(
-                    location=(lat, lon),
-                    radius=3,
-                    color="white",
-                    weight=2,
-                    fill=True,
-                    fill_color=pulse_color,
-                    fill_opacity=1.0,
-                ).add_to(fg)
-                break
+    # 클릭 시 지도 강조표시는 생략하고 우측 패널만 갱신
 
     # 노선 라인(버스만 해당)
     if kind == "bus":
