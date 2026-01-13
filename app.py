@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 from matplotlib import font_manager as fm
 from PIL import Image
 import os
+import streamlit.components.v1 as components
 
 try:
     import folium
@@ -2114,6 +2115,184 @@ def _norm_text(s: str) -> str:
     return re.sub(r"[^0-9a-z가-힣]+", "", s)
 
 
+# OPTIMIZED_NO_RERENDER_ON_CLICK
+# lat/lon candidates: lat, latitude, Latitude, 위도, y/Y | lon/lng/longitude/Longitude, 경도, x/X
+# id candidates: id, ID, idx, index, 사고ID, 낙석ID | label candidates: label, name, title, 지점명, 장소, 위치, 주소
+BRIDGE_JS = """
+<script src="https://unpkg.com/streamlit-component-lib@1.5.0/dist/index.js"></script>
+<script>
+const sendSelection = (payload) => {
+  if (window.Streamlit) {
+    Streamlit.setComponentValue(payload);
+  }
+};
+</script>
+"""
+
+
+# OPTIMIZED_NO_RERENDER_ON_CLICK
+def _pick_col(df: pd.DataFrame, candidates: list[str]):
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+
+# OPTIMIZED_NO_RERENDER_ON_CLICK
+def _lat_lon_cols(df: pd.DataFrame):
+    lat_col = _pick_col(df, ["lat", "latitude", "Latitude", "위도", "y", "Y"])
+    lon_col = _pick_col(df, ["lon", "lng", "longitude", "Longitude", "경도", "x", "X"])
+    return lat_col, lon_col
+
+
+# OPTIMIZED_NO_RERENDER_ON_CLICK
+def _id_col(df: pd.DataFrame):
+    return _pick_col(df, ["id", "ID", "idx", "index", "사고ID", "낙석ID"])
+
+
+# OPTIMIZED_NO_RERENDER_ON_CLICK
+def _label_col(df: pd.DataFrame):
+    return _pick_col(df, ["label", "name", "title", "지점명", "장소", "위치", "주소"])
+
+
+# OPTIMIZED_NO_RERENDER_ON_CLICK
+@st.cache_data(show_spinner=False)
+def _build_map_html_accident(
+    df_view: pd.DataFrame,
+    center: tuple[float, float],
+    zoom_start: int,
+):
+    m = folium.Map(
+        location=center,
+        zoom_start=zoom_start,
+        tiles="OpenStreetMap",
+        control_scale=True,
+        zoom_control=False,
+        scrollWheelZoom=False,
+        doubleClickZoom=False,
+        touchZoom=False,
+        dragging=True,
+        options={"keyboard": False},
+    )
+    m.get_root().html.add_child(folium.Element(BRIDGE_JS))
+    if df_view.empty:
+        return m.get_root().render()
+    lat_col, lon_col = _lat_lon_cols(df_view)
+    if not lat_col or not lon_col:
+        return m.get_root().render()
+    id_col = _id_col(df_view)
+    label_col = _label_col(df_view)
+    for idx, row in df_view.head(2000).iterrows():
+        lat = float(row[lat_col])
+        lon = float(row[lon_col])
+        pid = row[id_col] if id_col else idx
+        label = row[label_col] if label_col else f"사고 {pid}"
+        mk = folium.CircleMarker(
+            location=(lat, lon),
+            radius=2,
+            color="#dc3545",
+            fill=True,
+            fill_opacity=0.85,
+        ).add_to(m)
+        mk.add_child(
+            folium.Element(
+                f"<script>{mk.get_name()}.on('click', function() {{ sendSelection({{type: 'accident', id: '{pid}'}}); }});</script>"
+            )
+        )
+    return m.get_root().render()
+
+
+# OPTIMIZED_NO_RERENDER_ON_CLICK
+@st.cache_data(show_spinner=False)
+def _build_map_html_rockfall(
+    points: list[tuple[float, float, str]],
+    center: tuple[float, float],
+    zoom_start: int,
+):
+    m = folium.Map(
+        location=center,
+        zoom_start=zoom_start,
+        tiles="OpenStreetMap",
+        control_scale=True,
+        zoom_control=False,
+        scrollWheelZoom=False,
+        doubleClickZoom=False,
+        touchZoom=False,
+        dragging=True,
+        options={"keyboard": False},
+    )
+    m.get_root().html.add_child(folium.Element(BRIDGE_JS))
+    for idx, (lat, lon, label) in enumerate(points):
+        mk = folium.CircleMarker(
+            location=(lat, lon),
+            radius=2,
+            color="#ff8a00",
+            fill=True,
+            fill_opacity=0.85,
+        ).add_to(m)
+        mk.add_child(
+            folium.Element(
+                f"<script>{mk.get_name()}.on('click', function() {{ sendSelection({{type: 'rockfall', id: '{idx}'}}); }});</script>"
+            )
+        )
+    return m.get_root().render()
+
+
+# OPTIMIZED_NO_RERENDER_ON_CLICK
+@st.cache_data(show_spinner=False)
+def _build_map_html_bus(
+    selected_route_id: str | None,
+    center: tuple[float, float],
+    zoom_start: int,
+):
+    m = folium.Map(
+        location=center,
+        zoom_start=zoom_start,
+        tiles="OpenStreetMap",
+        control_scale=True,
+        zoom_control=False,
+        scrollWheelZoom=False,
+        doubleClickZoom=False,
+        touchZoom=False,
+        dragging=True,
+        options={"keyboard": False},
+    )
+    m.get_root().html.add_child(folium.Element(BRIDGE_JS))
+    routes, bus_stops = build_bus_routes()
+    if selected_route_id:
+        route_name_map = {r["id"]: r["name"] for r in _bus_route_defs()}
+        selected_route_name = route_name_map.get(selected_route_id)
+        if selected_route_name:
+            bus_stops = [
+                s for s in bus_stops if selected_route_name in (s.get("routes") or [])
+            ]
+            routes = [r for r in routes if r.get("id") == selected_route_id]
+    for r in routes:
+        pts = r.get("points", [])
+        if len(pts) < 2:
+            continue
+        folium.PolyLine(
+            pts,
+            color=r.get("color", "#2a9d8f"),
+            weight=3,
+            opacity=0.8,
+        ).add_to(m)
+    for idx, stop in enumerate(bus_stops):
+        mk = folium.CircleMarker(
+            location=(float(stop["lat"]), float(stop["lon"])),
+            radius=2,
+            color="#6b7280",
+            fill=True,
+            fill_opacity=0.85,
+        ).add_to(m)
+        mk.add_child(
+            folium.Element(
+                f"<script>{mk.get_name()}.on('click', function() {{ sendSelection({{type: 'bus', id: '{idx}'}}); }});</script>"
+            )
+        )
+    return m.get_root().render()
+
+
 def _row_to_address(df: pd.DataFrame, row: pd.Series) -> str:
     """CSV 한 행에서 '주소'로 볼만한 텍스트를 뽑음."""
     for c in ["clean_normalized", "address", "주소", "detail", "raw"]:
@@ -2716,34 +2895,47 @@ with st.container(border=True):
         left_main, right_detail = st.columns([2.2, 1], gap="large")
         with left_main:
             st.caption("울릉군 버스 노선/정류장")
-            bus_map_state = render_ulleung_folium_map(
-                kind="bus",
-                height=MAP_H,
-                selected_route_id=st.session_state.get("selected_bus_route_id"),
+            routes, bus_stops = build_bus_routes()  # OPTIMIZED_NO_RERENDER_ON_CLICK
+            sel_route_id = st.session_state.get("selected_bus_route_id")
+            if sel_route_id:
+                route_name_map = {r["id"]: r["name"] for r in _bus_route_defs()}
+                selected_route_name = route_name_map.get(sel_route_id)
+                if selected_route_name:
+                    bus_stops = [
+                        s for s in bus_stops if selected_route_name in (s.get("routes") or [])
+                    ]
+            st.session_state["bus_stops_meta"] = bus_stops  # OPTIMIZED_NO_RERENDER_ON_CLICK
+            map_html = _build_map_html_bus(  # OPTIMIZED_NO_RERENDER_ON_CLICK
+                sel_route_id,
+                (37.5044, 130.8757),
+                12,
             )
-            if isinstance(bus_map_state, dict):
-                last = bus_map_state.get("last_object_clicked")
+            payload = components.html(  # OPTIMIZED_NO_RERENDER_ON_CLICK
+                map_html,
+                height=MAP_H,
+                scrolling=False,
+            )
+            if isinstance(payload, dict) and payload.get("type") == "bus":
+                selected_id = payload.get("id")
                 bus_meta = st.session_state.get("bus_stops_meta", [])
-                if isinstance(last, dict) and "lat" in last and "lng" in last and bus_meta:
-                    lat0 = float(last["lat"])
-                    lon0 = float(last["lng"])
-                    best = None
-                    best_d = None
-                    for p in bus_meta:
-                        d = abs(float(p["lat"]) - lat0) + abs(float(p["lon"]) - lon0)
-                        if best_d is None or d < best_d:
-                            best_d = d
-                            best = p
-                    if best is not None and best_d is not None and best_d < 0.002:
-                        st.session_state["selected_acc_meta"] = None
-                        st.session_state["selected_acc_photo_path"] = None
-                        st.session_state["selected_rockfall_meta"] = None
-                        st.session_state["selected_rockfall_photo_path"] = None
-                        name = best.get("name", "")
-                        st.session_state["selected_bus_meta"] = {
-                            "name": name,
-                            "routes": best.get("routes", []) or [],
-                        }
+                target = None
+                if selected_id is not None:
+                    try:
+                        sel_idx = int(selected_id)
+                    except Exception:
+                        sel_idx = None
+                    if sel_idx is not None and 0 <= sel_idx < len(bus_meta):
+                        target = bus_meta[sel_idx]
+                if target is not None:
+                    st.session_state["selected_acc_meta"] = None
+                    st.session_state["selected_acc_photo_path"] = None
+                    st.session_state["selected_rockfall_meta"] = None
+                    st.session_state["selected_rockfall_photo_path"] = None
+                    name = target.get("name", "")
+                    st.session_state["selected_bus_meta"] = {
+                        "name": name,
+                        "routes": target.get("routes", []) or [],
+                    }
             st.caption(f"조회기준: {datetime.now():%Y-%m-%d %H:%M}")
 
         with right_detail:
@@ -3008,34 +3200,37 @@ with st.container(border=True):
                                 center_override = (float(p["lat"]), float(p["lon"]))
                                 break
 
-                    map_state = render_ulleung_folium_map(
-                        kind="accident",
-                        height=MAP_H,
-                        accident_df=df_view,
-                        highlight_idx=highlight_idx,
-                        center_override=center_override,
+                    map_html = _build_map_html_accident(  # OPTIMIZED_NO_RERENDER_ON_CLICK
+                        df_view,
+                        center_override or (37.5044, 130.8757),
+                        12,
                     )
-
-                    if isinstance(map_state, dict):
-                        last = map_state.get("last_object_clicked")
-                        if isinstance(last, dict) and "lat" in last and "lng" in last:
-                            lat0 = float(last["lat"])
-                            lon0 = float(last["lng"])
-                            best_idx = None
-                            best_d = None
-                            for i in df_view.index:
-                                row_lat = df_view.at[i, "latitude"]
-                                row_lon = df_view.at[i, "longitude"]
-                                d = abs(row_lat - lat0) + abs(row_lon - lon0)
-                                if best_d is None or d < best_d:
-                                    best_d = d
-                                    best_idx = i
-                            if best_d is not None and best_d < 0.002:
-                                st.session_state["selected_rockfall_meta"] = None
-                                st.session_state["selected_rockfall_photo_path"] = None
-                                st.session_state["selected_bus_meta"] = None
-                                _set_selected_accident(df_acc, best_idx)
-                                st.session_state["selected_acc_idx"] = int(best_idx)
+                    payload = components.html(  # OPTIMIZED_NO_RERENDER_ON_CLICK
+                        map_html,
+                        height=MAP_H,
+                        scrolling=False,
+                    )
+                    if isinstance(payload, dict) and payload.get("type") == "accident":
+                        selected_id = payload.get("id")
+                        id_col = _id_col(df_view)
+                        target_idx = None
+                        if id_col and selected_id is not None:
+                            matches = df_view.index[
+                                df_view[id_col].astype(str) == str(selected_id)
+                            ]
+                            if len(matches) > 0:
+                                target_idx = matches[0]
+                        elif selected_id is not None:
+                            try:
+                                target_idx = int(selected_id)
+                            except Exception:
+                                target_idx = None
+                        if target_idx is not None:
+                            st.session_state["selected_rockfall_meta"] = None
+                            st.session_state["selected_rockfall_photo_path"] = None
+                            st.session_state["selected_bus_meta"] = None
+                            _set_selected_accident(df_acc, target_idx)
+                            st.session_state["selected_acc_idx"] = int(target_idx)
 
         with right_detail:
             _render_photo_detail_panel("accident")
@@ -3189,45 +3384,45 @@ with st.container(border=True):
                         if int(p.get("idx", -1)) == int(highlight_idx):
                             center_override = (float(p["lat"]), float(p["lon"]))
                             break
-                rock_map_state = render_ulleung_folium_map(
-                    kind="rockfall",
-                    height=MAP_H,
-                    highlight_idx=highlight_idx,
-                    center_override=center_override,
+                map_html = _build_map_html_rockfall(  # OPTIMIZED_NO_RERENDER_ON_CLICK
+                    load_rockfall_points()[0],
+                    center_override or (37.5044, 130.8757),
+                    12,
                 )
-                if isinstance(rock_map_state, dict):
-                    last = rock_map_state.get("last_object_clicked")
+                payload = components.html(  # OPTIMIZED_NO_RERENDER_ON_CLICK
+                    map_html,
+                    height=MAP_H,
+                    scrolling=False,
+                )
+                if isinstance(payload, dict) and payload.get("type") == "rockfall":
+                    selected_id = payload.get("id")
                     rock_meta = st.session_state.get("rockfall_points_meta", [])
-                    if (
-                        isinstance(last, dict)
-                        and "lat" in last
-                        and "lng" in last
-                        and rock_meta
-                    ):
-                        lat0 = float(last["lat"])
-                        lon0 = float(last["lng"])
-                        best = None
-                        best_d = None
-                        for p in rock_meta:
-                            d = abs(float(p["lat"]) - lat0) + abs(float(p["lon"]) - lon0)
-                            if best_d is None or d < best_d:
-                                best_d = d
-                                best = p
-                        if best is not None and best_d is not None and best_d < 0.002:
-                            st.session_state["selected_acc_meta"] = None
-                            st.session_state["selected_acc_photo_path"] = None
-                            st.session_state["selected_acc_year"] = None
-                            st.session_state["selected_bus_meta"] = None
-                            name = best.get("name", "")
-                            photo = best.get("photo", None)
-                            best_idx = int(best.get("idx", 0))
-                            st.session_state["selected_rock_idx"] = best_idx
-                            st.session_state["selected_rockfall_meta"] = _rockfall_meta_text(
-                                best
-                            )
-                            st.session_state["selected_rockfall_photo_path"] = (
-                                str(photo) if photo else None
-                            )
+                    target = None
+                    if selected_id is not None:
+                        try:
+                            sel_idx = int(selected_id)
+                        except Exception:
+                            sel_idx = None
+                        if sel_idx is not None and rock_meta:
+                            for p in rock_meta:
+                                if int(p.get("idx", -1)) == sel_idx:
+                                    target = p
+                                    break
+                    if target is not None:
+                        st.session_state["selected_acc_meta"] = None
+                        st.session_state["selected_acc_photo_path"] = None
+                        st.session_state["selected_acc_year"] = None
+                        st.session_state["selected_bus_meta"] = None
+                        name = target.get("name", "")
+                        photo = target.get("photo", None)
+                        best_idx = int(target.get("idx", 0))
+                        st.session_state["selected_rock_idx"] = best_idx
+                        st.session_state["selected_rockfall_meta"] = _rockfall_meta_text(
+                            target
+                        )
+                        st.session_state["selected_rockfall_photo_path"] = (
+                            str(photo) if photo else None
+                        )
 
         with right_detail:
             _render_photo_detail_panel("rockfall")
