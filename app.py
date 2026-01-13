@@ -1030,28 +1030,71 @@ def build_bus_routes():
     return routes, stops
 
 
-def render_ulleung_folium_map(
-    kind: str = "base",
-    height: int = 420,
-    accident_df: pd.DataFrame | None = None,
-    highlight_idx: int | None = None,
-    center_override: tuple[float, float] | None = None,
+def _marker_highlight_js(marker_name: str) -> str:  # OPTIMIZED_BASEMAP_CACHE  # OPTIMIZED_JS_HIGHLIGHT
+    return f"""
+    <script>
+    (function() {{
+        var marker = {marker_name};
+        if (!marker || marker.__highlightBound) return;
+        marker.__highlightBound = true;
+        marker.on('click', function() {{
+            var prev = window.__selectedMarker;
+            if (prev && prev !== marker) {{
+                if (prev.__origStyle && prev.setStyle) {{
+                    prev.setStyle(prev.__origStyle);
+                }}
+                if (prev.__origRadius && prev.setRadius) {{
+                    prev.setRadius(prev.__origRadius);
+                }}
+                if (prev.__origOpacity !== undefined && prev.setOpacity) {{
+                    prev.setOpacity(prev.__origOpacity);
+                }}
+                if (prev.__origZIndex !== undefined && prev.setZIndexOffset) {{
+                    prev.setZIndexOffset(prev.__origZIndex);
+                }}
+            }}
+            if (!marker.__origStyle && marker.options) {{
+                marker.__origStyle = Object.assign({{}}, marker.options);
+            }}
+            if (!marker.__origRadius && marker.getRadius) {{
+                marker.__origRadius = marker.getRadius();
+            }}
+            if (marker.options && marker.options.opacity !== undefined) {{
+                marker.__origOpacity = marker.options.opacity;
+            }} else if (marker.__origOpacity === undefined) {{
+                marker.__origOpacity = 1.0;
+            }}
+            if (marker.setStyle) {{
+                marker.setStyle({{weight: 3, opacity: 1.0, fillOpacity: 1.0}});
+            }}
+            if (marker.setRadius) {{
+                var r = marker.__origRadius || 2;
+                marker.setRadius(r + 2);
+            }}
+            if (marker.setOpacity) {{
+                marker.setOpacity(1.0);
+            }}
+            if (marker.setZIndexOffset) {{
+                marker.__origZIndex = marker.__origZIndex || 0;
+                marker.setZIndexOffset(1000);
+            }}
+            window.__selectedMarker = marker;
+        }});
+    }})();
+    </script>
+    """
+
+
+@st.cache_resource(show_spinner=False)
+def create_base_map_cached(  # OPTIMIZED_BASEMAP_CACHE  # OPTIMIZED_JS_HIGHLIGHT
+    requested_kind: str,
+    year_filter: int | None = None,
     selected_route_id: str | None = None,
+    show_ev: bool = True,
 ):
-    """울릉군 Folium 지도 렌더."""
-
-    if folium is None:
-        st.error(
-            "folium 패키지가 설치되어 있지 않아 지도를 표시할 수 없어. 터미널에서 `pip install folium` 해줘."
-        )
-        return
-
-    requested_kind = kind
-
+    """울릉군 Folium 베이스 지도 생성."""
     # 울릉도 중심(대략)
     center = (37.5044, 130.8757)
-    if center_override is not None:
-        center = center_override
 
     m = folium.Map(  # OPTIMIZED_ZOOM_LOCK
         location=center,
@@ -1064,17 +1107,18 @@ def render_ulleung_folium_map(
         touchZoom=False,  # OPTIMIZED_ZOOM_LOCK
         dragging=True,  # OPTIMIZED_ZOOM_LOCK
         options={"keyboard": False},  # OPTIMIZED_ZOOM_LOCK
+        prefer_canvas=True,
     )
 
     # 전기차 충전소 데이터 (모든 지도에 추가 표시)
-    ev_points = load_ev_charger_points()
+    ev_points = load_ev_charger_points() if show_ev else []
 
-    if kind == "accident":
-        df_acc = accident_df if accident_df is not None else load_accidents_csv()
+    if requested_kind == "accident":
+        df_acc = load_accidents_csv()
+        if year_filter is not None and not df_acc.empty:
+            df_acc = _filter_accidents_by_year(df_acc, year_filter)
 
-        # CSV가 있으면 실제 좌표로 마커 생성
         if not df_acc.empty:
-            # popup/tooltip에 보여줄 사고 유형 컬럼 찾기
             type_col_candidates = [
                 c
                 for c in ["type", "accident_type", "사고유형", "사고_type"]
@@ -1083,13 +1127,10 @@ def render_ulleung_folium_map(
             type_col = type_col_candidates[0] if type_col_candidates else None
 
             sample_points = []
-            acc_points_meta = []  # 클릭 좌표 → 원본 행 인덱스 매칭용
-            # 너무 많을 수 있어서 기본은 2000개로 제한
+            acc_points_meta = []
             for i, row in df_acc.head(2000).iterrows():
                 lat = float(row["latitude"])
                 lon = float(row["longitude"])
-
-                # 사고 유형(type)만 표시 (없으면 미상)
                 acc_type = "미상"
                 if type_col is not None:
                     v = row.get(type_col, None)
@@ -1097,35 +1138,25 @@ def render_ulleung_folium_map(
                         s = str(v).strip()
                         if s and s.lower() not in ["nan", "none"]:
                             acc_type = s
-
-                # 주소는 사진 매칭용으로만 내부에서 계산(마커에는 표시하지 않음)
                 _ = _row_to_address(df_acc, row)
-
-                # 클릭 처리용 IDX 포함(주소는 포함하지 않음)
                 sample_points.append((lat, lon, f"사고 유형 : {acc_type}"))
                 acc_points_meta.append({"idx": int(i), "lat": lat, "lon": lon})
 
             st.session_state["acc_points_meta"] = acc_points_meta
-
         else:
-            if accident_df is not None:
-                sample_points = []
-                st.session_state["acc_points_meta"] = []
-            else:
-                # CSV가 없거나 형식이 다르면 샘플로 fallback
-                sample_points = [
-                    (37.4890, 130.9050, "사고 유형 : 사고(샘플) A"),
-                    (37.4770, 130.9130, "사고 유형 : 사고(샘플) B"),
-                    (37.4705, 130.8985, "사고 유형 : 사고(샘플) C"),
-                ]
-                st.session_state["acc_points_meta"] = [
-                    {"idx": 0, "lat": 37.4890, "lon": 130.9050},
-                    {"idx": 1, "lat": 37.4770, "lon": 130.9130},
-                    {"idx": 2, "lat": 37.4705, "lon": 130.8985},
-                ]
+            sample_points = [
+                (37.4890, 130.9050, "사고 유형 : 사고(샘플) A"),
+                (37.4770, 130.9130, "사고 유형 : 사고(샘플) B"),
+                (37.4705, 130.8985, "사고 유형 : 사고(샘플) C"),
+            ]
+            st.session_state["acc_points_meta"] = [
+                {"idx": 0, "lat": 37.4890, "lon": 130.9050},
+                {"idx": 1, "lat": 37.4770, "lon": 130.9130},
+                {"idx": 2, "lat": 37.4705, "lon": 130.8985},
+            ]
 
         color = "red"
-    elif kind == "rockfall":
+    elif requested_kind == "rockfall":
         sample_points, rockfall_meta = load_rockfall_points()
         st.session_state["rockfall_points_meta"] = rockfall_meta
         if not sample_points:
@@ -1134,7 +1165,7 @@ def render_ulleung_folium_map(
                 (37.4680, 130.8920, "낙석 발생 위치 : (샘플) B"),
             ]
         color = "orange"
-    elif kind == "bus":
+    elif requested_kind == "bus":
         routes, bus_stops = build_bus_routes()
         if not bus_stops:
             bus_stops = [
@@ -1172,14 +1203,12 @@ def render_ulleung_folium_map(
         sample_points = []
         color = "green"
 
-    fg = folium.FeatureGroup(name=kind)
+    fg = folium.FeatureGroup(name=requested_kind)
 
-    # 마커 클러스터 사용하지 않음(모든 포인트 개별 표시)
     marker_parent = fg
     bus_marker_parent = fg
     marker_points = sample_points
-    if kind == "bus":
-        # bus는 경유 노선 색상 기반으로 마커 색을 나눔
+    if requested_kind == "bus":
         routes_defs = {r["name"]: r["color"] for r in _bus_route_defs()}
         marker_points = []
         for stop in st.session_state.get("bus_stops_meta", []):
@@ -1188,90 +1217,32 @@ def render_ulleung_folium_map(
             color_for_stop = routes_defs.get(first_route, "#666666")
             marker_points.append((stop["lat"], stop["lon"], label, color_for_stop))
 
-    # ---- [추가 최적화] 포인트가 아주 많으면 FastMarkerCluster로 "기본 표시"만 빠르게 렌더 ----
-    #  - 클릭 팝업(상세 HTML) 생성이 렌더 시간을 크게 잡아먹어서,
-    #    포인트가 많을 때는 우선 빠르게 찍고(팝업 없음), 선택(하이라이트)이 있을 때만 기존 방식 사용.
-    use_fast = (
-        FastMarkerCluster is not None
-        and kind in {"accident", "rockfall"}
-        and highlight_idx is None
-        and len(marker_points) >= 400
-    )
+    for mp in marker_points:
+        if requested_kind == "bus":
+            lat, lon, label, m_color = mp
+        else:
+            lat, lon, label = mp
+            m_color = color
+        popup_html = f"""
+        <div style='font-size:12px; line-height:1.25; max-width:200px; white-space:normal;'>
+            {label}
+        </div>
+        """
+        popup = folium.Popup(popup_html, max_width=220)
 
-    if use_fast:
-        coords = [(mp[0], mp[1]) for mp in marker_points]
-        FastMarkerCluster(coords, name=f"{kind}_fast").add_to(fg)
-    else:
-        for mp in marker_points:
-            if kind == "bus":
-                lat, lon, label, m_color = mp
-            else:
-                lat, lon, label = mp
-                m_color = color
-            # hover(tooltip)는 사용하지 않고, 클릭(popup)만 사용
-            # 클릭 시 뜨는 정보(팝업) 크기/폰트 줄이기
-            popup_html = f"""
-            <div style='font-size:12px; line-height:1.25; max-width:200px; white-space:normal;'>
-                {label}
-            </div>
-            """
-            popup = folium.Popup(popup_html, max_width=220)
+        marker = folium.CircleMarker(
+            location=(lat, lon),
+            radius=2,
+            color=m_color,
+            fill=True,
+            fill_opacity=0.85,
+            popup=popup,
+        ).add_to(marker_parent)
+        m.get_root().script.add_child(
+            folium.Element(_marker_highlight_js(marker.get_name()))
+        )
 
-            folium.CircleMarker(
-                location=(lat, lon),
-                radius=2,
-                color=m_color,
-                fill=True,
-                fill_opacity=0.85,
-                popup=popup,
-            ).add_to(marker_parent)
-
-    if kind in {"accident", "rockfall"} and highlight_idx is not None:
-        meta_key = "acc_points_meta" if kind == "accident" else "rockfall_points_meta"
-        pulse_color = "#ff0000" if kind == "accident" else "#ff8a00"
-        pulse_rgba = "255, 0, 0" if kind == "accident" else "255, 138, 0"
-        for p in st.session_state.get(meta_key, []):
-            if int(p.get("idx", -1)) == int(highlight_idx):
-                lat, lon = float(p["lat"]), float(p["lon"])
-                if DivIcon is not None:
-                    pulse_css = f"""
-                    <div style="
-                        width: 20px;
-                        height: 20px;
-                        background-color: rgba({pulse_rgba}, 0.6);
-                        border-radius: 50%;
-                        box-shadow: 0 0 0 0 rgba({pulse_rgba}, 0.7);
-                        animation: pulse-red 1.5s infinite;
-                        "></div>
-                    <style>
-                        @keyframes pulse-red {{
-                            0% {{ transform: scale(0.95); box-shadow: 0 0 0 0 rgba({pulse_rgba}, 0.7); }}
-                            70% {{ transform: scale(1); box-shadow: 0 0 0 20px rgba({pulse_rgba}, 0); }}
-                            100% {{ transform: scale(0.95); box-shadow: 0 0 0 0 rgba({pulse_rgba}, 0); }}
-                        }}
-                    </style>
-                    """
-                    folium.Marker(
-                        location=(lat, lon),
-                        icon=DivIcon(
-                            icon_size=(20, 20),
-                            icon_anchor=(10, 10),
-                            html=pulse_css,
-                        ),
-                    ).add_to(fg)
-                folium.CircleMarker(
-                    location=(lat, lon),
-                    radius=3,
-                    color="white",
-                    weight=2,
-                    fill=True,
-                    fill_color=pulse_color,
-                    fill_opacity=1.0,
-                ).add_to(fg)
-                break
-
-    # 노선 라인(버스만 해당)
-    if kind == "bus":
+    if requested_kind == "bus":
         routes, _ = build_bus_routes()
         if selected_route_id:
             routes = [r for r in routes if r.get("id") == selected_route_id]
@@ -1281,7 +1252,6 @@ def render_ulleung_folium_map(
                 continue
             is_selected = selected_route_id and r.get("id") == selected_route_id
             if is_selected:
-                # 강조 라인: 흰색 외곽 + 원래 색상으로 두껍게
                 folium.PolyLine(
                     pts,
                     color="#ffffff",
@@ -1339,7 +1309,7 @@ def render_ulleung_folium_map(
                 }
             </style>
             """
-            folium.Marker(
+            marker = folium.Marker(
                 location=(selected_bus_pos["lat"], selected_bus_pos["lon"]),
                 icon=DivIcon(
                     icon_size=(18, 18),
@@ -1348,6 +1318,9 @@ def render_ulleung_folium_map(
                 ),
                 tooltip="현재 위치",
             ).add_to(fg)
+            m.get_root().script.add_child(
+                folium.Element(_marker_highlight_js(marker.get_name()))
+            )
         for bus in bus_positions:
             tooltip = f"가상 버스 {bus['route_id']}노선"
             if DivIcon is not None:
@@ -1363,7 +1336,7 @@ def render_ulleung_folium_map(
                   <circle cx="21.5" cy="16.5" r="0.8" fill="#f6f7fb"/>
                 </svg>
                 """
-                folium.Marker(
+                marker = folium.Marker(
                     location=(bus["lat"], bus["lon"]),
                     icon=DivIcon(
                         icon_size=(28, 18),
@@ -1372,8 +1345,11 @@ def render_ulleung_folium_map(
                     ),
                     tooltip=tooltip,
                 ).add_to(bus_marker_parent)
+                m.get_root().script.add_child(
+                    folium.Element(_marker_highlight_js(marker.get_name()))
+                )
             else:
-                folium.CircleMarker(
+                marker = folium.CircleMarker(
                     location=(bus["lat"], bus["lon"]),
                     radius=4,
                     color="#222222",
@@ -1383,10 +1359,12 @@ def render_ulleung_folium_map(
                     fill_opacity=0.95,
                     tooltip=tooltip,
                 ).add_to(bus_marker_parent)
+                m.get_root().script.add_child(
+                    folium.Element(_marker_highlight_js(marker.get_name()))
+                )
 
     fg.add_to(m)
 
-    # 전기차 충전소 마커(모든 지도에 오버레이)
     if ev_points:
         ev_fg = folium.FeatureGroup(name="ev_chargers")
         for lat, lon, label in ev_points:
@@ -1396,7 +1374,7 @@ def render_ulleung_folium_map(
             </div>
             """
             popup = folium.Popup(popup_html, max_width=240)
-            folium.CircleMarker(
+            marker = folium.CircleMarker(
                 location=(lat, lon),
                 radius=1,
                 color="#2ca02c",
@@ -1404,23 +1382,52 @@ def render_ulleung_folium_map(
                 fill_opacity=0.9,
                 popup=popup,
             ).add_to(ev_fg)
+            m.get_root().script.add_child(
+                folium.Element(_marker_highlight_js(marker.get_name()))
+            )
 
         ev_fg.add_to(m)
 
-    # 지도 렌더 (가능하면 클릭 이벤트까지 받기)
+    return m
+
+
+def render_ulleung_folium_map(  # OPTIMIZED_BASEMAP_CACHE  # OPTIMIZED_JS_HIGHLIGHT
+    kind: str = "base",
+    height: int = 420,
+    highlight_idx: int | None = None,
+    year_filter: int | None = None,
+    selected_route_id: str | None = None,
+    show_ev: bool = True,
+):
+    """울릉군 Folium 지도 렌더."""
+
+    if folium is None:
+        st.error(
+            "folium 패키지가 설치되어 있지 않아 지도를 표시할 수 없어. 터미널에서 `pip install folium` 해줘."
+        )
+        return
+
+    requested_kind = kind
+    _ = highlight_idx  # OPTIMIZED_JS_HIGHLIGHT
+    base_map = create_base_map_cached(
+        requested_kind=requested_kind,
+        year_filter=year_filter,
+        selected_route_id=selected_route_id,
+        show_ev=show_ev,
+    )
+
     if st_folium is not None:
         return st_folium(
-            m,
+            base_map,
             height=height,
             width=None,
             key=f"folium_{requested_kind}",
             returned_objects=["last_object_clicked"],
         )
 
-    # streamlit-folium이 없으면 이벤트 없이 지도만 표시
     import streamlit.components.v1 as components
 
-    components.html(m.get_root().render(), height=height)
+    components.html(base_map.get_root().render(), height=height)
     return None
 
 
@@ -3044,20 +3051,10 @@ with st.container(border=True):
                             year_filter,
                         )
 
-                    highlight_idx = st.session_state.get("selected_acc_idx")
-                    center_override = None
-                    if highlight_idx is not None:
-                        for p in st.session_state.get("acc_points_meta", []):
-                            if int(p.get("idx", -1)) == int(highlight_idx):
-                                center_override = (float(p["lat"]), float(p["lon"]))
-                                break
-
                     map_state = render_ulleung_folium_map(
                         kind="accident",
                         height=MAP_H,
-                        accident_df=df_view,
-                        highlight_idx=highlight_idx,
-                        center_override=center_override,
+                        year_filter=year_filter,
                     )
                     if isinstance(map_state, dict):
                         last = map_state.get("last_object_clicked")
@@ -3224,19 +3221,9 @@ with st.container(border=True):
                                         st.session_state["rock_view_mode"] = "map"
                                         st.rerun()
             else:
-                highlight_idx = st.session_state.get("selected_rock_idx")
-                center_override = None
-                _, rock_meta = load_rockfall_points()
-                if highlight_idx is not None:
-                    for p in rock_meta:
-                        if int(p.get("idx", -1)) == int(highlight_idx):
-                            center_override = (float(p["lat"]), float(p["lon"]))
-                            break
                 rock_map_state = render_ulleung_folium_map(
                     kind="rockfall",
                     height=MAP_H,
-                    highlight_idx=highlight_idx,
-                    center_override=center_override,
                 )
                 if isinstance(rock_map_state, dict):
                     last = rock_map_state.get("last_object_clicked")
