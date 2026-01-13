@@ -1053,8 +1053,17 @@ def render_ulleung_folium_map(
     if center_override is not None:
         center = center_override
 
-    m = folium.Map(
-        location=center, zoom_start=12, tiles="OpenStreetMap", control_scale=True
+    m = folium.Map(  # OPTIMIZED_ZOOM_LOCK
+        location=center,
+        zoom_start=12,
+        tiles="OpenStreetMap",
+        control_scale=True,
+        zoom_control=False,  # OPTIMIZED_ZOOM_LOCK
+        scrollWheelZoom=False,  # OPTIMIZED_ZOOM_LOCK
+        doubleClickZoom=False,  # OPTIMIZED_ZOOM_LOCK
+        touchZoom=False,  # OPTIMIZED_ZOOM_LOCK
+        dragging=True,  # OPTIMIZED_ZOOM_LOCK
+        options={"keyboard": False},  # OPTIMIZED_ZOOM_LOCK
     )
 
     # 전기차 충전소 데이터 (모든 지도에 추가 표시)
