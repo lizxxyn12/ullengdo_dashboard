@@ -23,6 +23,10 @@ try:
 except Exception:
     MarkerCluster = None
 try:
+    from folium.plugins import FastMarkerCluster
+except Exception:
+    FastMarkerCluster = None
+try:
     from folium.features import DivIcon
 except Exception:
     DivIcon = None
@@ -247,7 +251,7 @@ div[data-testid="stDialog"] img { max-height: 86vh; width: 100%; object-fit: con
 }
 .bar-row {
   display: grid;
-  grid-template-columns: 120px 1fr; /* 값 표시 영역 제거(바 내부로 이동) */
+  grid-template-columns: 170px 1fr; /* 라벨 영역 확장으로 한 줄 유지 */
   gap: 10px;
   align-items: center;
 }
@@ -904,6 +908,39 @@ def _simulate_bus_positions(routes, per_route: int = 2):
     return positions
 
 
+# CACHED
+@st.cache_data(show_spinner=False)
+def _simulate_bus_positions_cached(route_payload: tuple, per_route: int = 2):
+    positions = []
+    for route_id, points in route_payload:
+        points = list(points)
+        if len(points) < 2:
+            continue
+        total, segments = _polyline_segments(points)
+        if total <= 0:
+            continue
+        route_id = str(route_id).strip()
+        jitter = (sum(ord(c) for c in route_id) % 7) * 0.01
+        for i in range(per_route):
+            frac = (i + 1) / (per_route + 1) + jitter
+            frac = frac % 1.0
+            distance = total * frac
+            point = _point_on_segments(segments, distance)
+            if point is None:
+                continue
+            lat, lon = point
+            positions.append(
+                {
+                    "route_id": route_id,
+                    "route_name": "",
+                    "lat": lat,
+                    "lon": lon,
+                    "index": i + 1,
+                }
+            )
+    return positions
+
+
 @st.cache_data(show_spinner=False)
 def build_bus_routes():
     """노선 정의를 좌표와 함께 반환."""
@@ -1154,29 +1191,43 @@ def render_ulleung_folium_map(
             marker_parent = MarkerCluster(name="bus_stops_cluster").add_to(fg)
             bus_marker_parent = MarkerCluster(name="bus_cluster").add_to(fg)
 
-    for mp in marker_points:
-        if kind == "bus":
-            lat, lon, label, m_color = mp
-        else:
-            lat, lon, label = mp
-            m_color = color
-        # hover(tooltip)는 사용하지 않고, 클릭(popup)만 사용
-        # 클릭 시 뜨는 정보(팝업) 크기/폰트 줄이기
-        popup_html = f"""
-        <div style='font-size:12px; line-height:1.25; max-width:200px; white-space:normal;'>
-            {label}
-        </div>
-        """
-        popup = folium.Popup(popup_html, max_width=220)
+    # ---- [추가 최적화] 포인트가 아주 많으면 FastMarkerCluster로 "기본 표시"만 빠르게 렌더 ----
+    #  - 클릭 팝업(상세 HTML) 생성이 렌더 시간을 크게 잡아먹어서,
+    #    포인트가 많을 때는 우선 빠르게 찍고(팝업 없음), 선택(하이라이트)이 있을 때만 기존 방식 사용.
+    use_fast = (
+        FastMarkerCluster is not None
+        and kind in {"accident", "rockfall"}
+        and highlight_idx is None
+        and len(marker_points) >= 400
+    )
 
-        folium.CircleMarker(
-            location=(lat, lon),
-            radius=5,
-            color=m_color,
-            fill=True,
-            fill_opacity=0.85,
-            popup=popup,
-        ).add_to(marker_parent)
+    if use_fast:
+        coords = [(mp[0], mp[1]) for mp in marker_points]
+        FastMarkerCluster(coords, name=f"{kind}_fast").add_to(fg)
+    else:
+        for mp in marker_points:
+            if kind == "bus":
+                lat, lon, label, m_color = mp
+            else:
+                lat, lon, label = mp
+                m_color = color
+            # hover(tooltip)는 사용하지 않고, 클릭(popup)만 사용
+            # 클릭 시 뜨는 정보(팝업) 크기/폰트 줄이기
+            popup_html = f"""
+            <div style='font-size:12px; line-height:1.25; max-width:200px; white-space:normal;'>
+                {label}
+            </div>
+            """
+            popup = folium.Popup(popup_html, max_width=220)
+
+            folium.CircleMarker(
+                location=(lat, lon),
+                radius=5,
+                color=m_color,
+                fill=True,
+                fill_opacity=0.85,
+                popup=popup,
+            ).add_to(marker_parent)
 
     if kind in {"accident", "rockfall"} and highlight_idx is not None:
         meta_key = "acc_points_meta" if kind == "accident" else "rockfall_points_meta"
@@ -1247,8 +1298,11 @@ def render_ulleung_folium_map(
                 opacity=0.95 if is_selected else 0.25,
                 tooltip=r.get("name", ""),
             ).add_to(fg)
-        bus_positions = _simulate_bus_positions(
-            routes, per_route=2 if selected_route_id else 1
+        route_payload = tuple(
+            (r.get("id", ""), tuple(r.get("points", []))) for r in routes
+        )
+        bus_positions = _simulate_bus_positions_cached(
+            route_payload, per_route=2 if selected_route_id else 1
         )
         selected_bus_pos = None
         if selected_route_id:
@@ -1363,6 +1417,7 @@ def render_ulleung_folium_map(
             height=height,
             width=None,
             key=f"folium_{requested_kind}",
+            returned_objects=["last_object_clicked"],
         )
 
     # streamlit-folium이 없으면 이벤트 없이 지도만 표시
@@ -1535,208 +1590,6 @@ def load_weather_passenger_monthly() -> pd.DataFrame:
 # -----------------------------
 # Vega-Lite Spec Functions
 # -----------------------------
-
-def _vega_base_config():
-    """Vega-Lite 차트 공통 스타일 설정."""
-    return {
-        "axis": {
-            "titleFontSize": 10,
-            "labelFontSize": 10,
-            "labelColor": "#1F2D3D",
-            "titleColor": "#1F2D3D",
-            "gridColor": "#E6EEF5",
-        },
-        "view": {"stroke": "transparent"},
-    }
-
-
-def _vega_bar_spec(x_field: str, y_field: str, title: str, height: int):
-    return {
-        "padding": {"top": 6, "right": 8, "bottom": 2, "left": 8},
-        "mark": {
-            "type": "bar",
-            "cornerRadiusTopLeft": 6,
-            "cornerRadiusTopRight": 6,
-            "color": "#F5B97A",
-            "opacity": 0.65,
-        },
-        "encoding": {
-            "x": {"field": x_field, "type": "ordinal", "axis": {"labelAngle": 0}},
-            "y": {
-                "field": y_field,
-                "type": "quantitative",
-                "axis": {"title": f"{y_field}(건)"},
-            },
-            "tooltip": [
-                {"field": x_field, "type": "ordinal"},
-                {"field": y_field, "type": "quantitative"},
-            ],
-        },
-        "height": height,
-        "title": None,
-        "config": _vega_base_config(),
-    }
-
-
-def _vega_weather_passenger_spec(x_field: str, title: str, height: int):
-    return {
-        "padding": {"top": 16, "right": 8, "bottom": 2, "left": 8},
-        "layer": [
-            {
-                "transform": [{"calculate": "'월 강수량 합 (mm)'", "as": "시리즈"}],
-                "mark": {"type": "bar", "color": "#B9CFE3", "opacity": 0.45},
-                "encoding": {
-                    "x": {"field": x_field, "type": "ordinal", "axis": {"labelAngle": 0}},
-                    "y": {
-                        "field": "강수량",
-                        "type": "quantitative",
-                        "axis": {"title": "강수량(mm)"},
-                    },
-                    "color": {
-                        "field": "시리즈",
-                        "type": "nominal",
-                        "scale": {
-                            "domain": ["월 강수량 합 (mm)"],
-                            "range": ["#B9CFE3"],
-                        },
-                        "legend": {
-                            "orient": "top",
-                            "direction": "horizontal",
-                            "title": None,
-                            "offset": 6,
-                            "padding": 0,
-                            "labelFontSize": 10,
-                            "labelLimit": 120,
-                        },
-                    },
-                    "tooltip": [
-                        {"field": x_field, "type": "ordinal"},
-                        {"field": "강수량", "type": "quantitative"},
-                    ],
-                },
-            },
-            {
-                "transform": [{"calculate": "'월 입도객수(명)'", "as": "시리즈"}],
-                "mark": {
-                    "type": "line",
-                    "color": "#2CA02C",
-                    "strokeWidth": 2.6,
-                    "point": {"filled": True, "size": 70},
-                },
-                "encoding": {
-                    "x": {"field": x_field, "type": "ordinal"},
-                    "y": {
-                        "field": "입도",
-                        "type": "quantitative",
-                        "axis": {"title": "여객수(명)", "orient": "right"},
-                    },
-                    "color": {
-                        "field": "시리즈",
-                        "type": "nominal",
-                        "scale": {
-                            "domain": ["월 입도객수(명)", "월 출도객수(명)"],
-                            "range": ["#2CA02C", "#D62728"],
-                        },
-                        "legend": {
-                            "orient": "top",
-                            "direction": "horizontal",
-                            "title": None,
-                            "symbolType": "stroke",
-                            "offset": 6,
-                            "padding": 0,
-                            "labelFontSize": 10,
-                            "labelLimit": 120,
-                        },
-                    },
-                    "tooltip": [
-                        {"field": x_field, "type": "ordinal"},
-                        {"field": "입도", "type": "quantitative"},
-                    ],
-                },
-            },
-            {
-                "transform": [{"calculate": "'월 출도객수(명)'", "as": "시리즈"}],
-                "mark": {
-                    "type": "line",
-                    "color": "#E45756",
-                    "strokeWidth": 2.6,
-                    "point": {"filled": True, "size": 70},
-                },
-                "encoding": {
-                    "x": {"field": x_field, "type": "ordinal"},
-                    "y": {
-                        "field": "출도",
-                        "type": "quantitative",
-                        "axis": None,
-                    },
-                    "color": {
-                        "field": "시리즈",
-                        "type": "nominal",
-                        "scale": {
-                            "domain": ["월 입도객수(명)", "월 출도객수(명)"],
-                            "range": ["#2CA02C", "#D62728"],
-                        },
-                        "legend": None,
-                    },
-                    "tooltip": [
-                        {"field": x_field, "type": "ordinal"},
-                        {"field": "출도", "type": "quantitative"},
-                    ],
-                },
-            },
-        ],
-        "height": height,
-        "resolve": {"scale": {"y": "independent", "color": "independent"}},
-        "title": None,
-        "config": _vega_base_config(),
-    }
-
-
-def _vega_bar_color_spec(
-    x_field: str, y_field: str, color_field: str, title: str, height: int
-):
-    return {
-        "padding": {"top": 10, "right": 8, "bottom": 2, "left": 18},
-        "mark": {
-            "type": "bar",
-            "cornerRadiusTopLeft": 6,
-            "cornerRadiusTopRight": 6,
-            "opacity": 0.85,
-        },
-        "encoding": {
-            "x": {"field": x_field, "type": "ordinal", "axis": {"labelAngle": 0}},
-            "y": {
-                "field": y_field,
-                "type": "quantitative",
-                "axis": {"title": "여객수(명)"},
-            },
-            "color": {
-                "field": color_field,
-                "type": "nominal",
-                "scale": {
-                    "domain": ["비수기", "성수기", "비수기(평균↑)"],
-                    "range": ["#A9CFAE", "#F1C58B", "#E6D07A"],
-                },
-                "legend": {
-                    "orient": "top-right",
-                    "direction": "horizontal",
-                    "title": None,
-                    "padding": 0,
-                    "offset": 6,
-                    "labelFontSize": 10,
-                },
-            },
-            "tooltip": [
-                {"field": x_field, "type": "ordinal"},
-                {"field": y_field, "type": "quantitative"},
-                {"field": color_field, "type": "nominal"},
-            ],
-        },
-        "height": height,
-        "title": None,
-        "config": _vega_base_config(),
-    }
-
 
 def _vega_base_config():
     """Vega-Lite 차트 공통 스타일 설정."""
@@ -2500,6 +2353,14 @@ def _set_selected_accident(df_acc: pd.DataFrame, idx: int):
     st.session_state["selected_bus_meta"] = None
 
 
+# CACHED
+@st.cache_data(show_spinner=False)
+def _filter_accidents_by_year(df_acc: pd.DataFrame, year_filter: int | None):
+    if year_filter is None:
+        return df_acc
+    return df_acc[df_acc["year"] == year_filter]
+
+
 # -----------------------------
 # Top Notice Bar (공지 자동 순환)
 # -----------------------------
@@ -2639,12 +2500,12 @@ with c1:
   </div>
 
   <div class="sea-section">
-    <div class="sea-section-title">통계 요약 (건수)</div>
+    <div class="sea-section-title">연도별 통계 요약(2025년 기준)</div>
     <div class="sea-bars">
       <div class="bar-row">
         <div class="bar-label">
           <div class="bar-label-wrap">
-            <span>입항</span>
+            <span>입항 전체</span>
             <span class="bar-sub">(선박/사람)</span>
             <span class="help-pop">
               <span class="help-pop-btn">?</span>
@@ -2667,7 +2528,7 @@ with c1:
       <div class="bar-row">
         <div class="bar-label">
           <div class="bar-label-wrap">
-            <span>출항</span>
+            <span>출항 전체</span>
             <span class="bar-sub">(선박/사람)</span>
             <span class="help-pop">
               <span class="help-pop-btn">?</span>
@@ -3145,17 +3006,44 @@ with st.container(border=True):
                                         st.rerun()
                 else:
                     df_acc = df_acc_list
-                    year_filter = None
+                    # ---- [최적화] selectbox 변경마다 지도 rerun 방지: form + 적용 버튼 ----  # OPTIMIZED
+                    year_filter = None  # OPTIMIZED
+                    df_view = df_acc  # OPTIMIZED
+
                     if "year" in df_acc.columns and not df_acc["year"].dropna().empty:
                         years = sorted({int(y) for y in df_acc["year"].dropna().unique()})
-                        idx_2025 = years.index(2025) + 1 if 2025 in years else 0
                         options = ["전체"] + [str(y) for y in years]
-                        selected_year_label = st.selectbox("연도 선택", options, index=idx_2025)
+
+                        if "acc_year_label" not in st.session_state:  # OPTIMIZED
+                            st.session_state["acc_year_label"] = (
+                                "전체" if 2025 not in years else "2025"
+                            )  # OPTIMIZED
+
+                        with st.form("acc_year_form", clear_on_submit=False):  # OPTIMIZED
+                            default_label = st.session_state["acc_year_label"]  # OPTIMIZED
+                            if default_label not in options:
+                                default_label = options[0]
+                            default_idx = options.index(default_label)
+
+                            selected_year_label = st.selectbox(
+                                "연도 선택",
+                                options,
+                                index=default_idx,
+                            )
+                            apply_year = st.form_submit_button("적용")  # OPTIMIZED
+
+                        if apply_year:
+                            st.session_state["acc_year_label"] = selected_year_label  # OPTIMIZED
+
+                        selected_year_label = st.session_state["acc_year_label"]  # OPTIMIZED
                         if selected_year_label != "전체":
-                            year_filter = int(selected_year_label)
-                    df_view = df_acc
+                            year_filter = int(selected_year_label)  # OPTIMIZED
+
                     if year_filter is not None:
-                        df_view = df_acc[df_acc["year"] == year_filter]
+                        df_view = _filter_accidents_by_year(  # OPTIMIZED
+                            df_acc,
+                            year_filter,
+                        )
 
                     highlight_idx = st.session_state.get("selected_acc_idx")
                     center_override = None
