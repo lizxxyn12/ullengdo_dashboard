@@ -1174,7 +1174,7 @@ def render_ulleung_folium_map(
 
     fg = folium.FeatureGroup(name=kind)
 
-    # 마커 클러스터 사용(사고/낙석은 항상 클러스터)
+    # 마커 클러스터 사용하지 않음(모든 포인트 개별 표시)
     marker_parent = fg
     bus_marker_parent = fg
     marker_points = sample_points
@@ -1183,22 +1183,10 @@ def render_ulleung_folium_map(
         routes_defs = {r["name"]: r["color"] for r in _bus_route_defs()}
         marker_points = []
         for stop in st.session_state.get("bus_stops_meta", []):
-            routes_txt = (
-                ", ".join(stop.get("routes", []))
-                if stop.get("routes")
-                else "경유 노선 정보 없음"
-            )
             label = f"정류장 : {stop['name']}"
             first_route = stop.get("routes", [None])[0] if stop.get("routes") else None
             color_for_stop = routes_defs.get(first_route, "#666666")
             marker_points.append((stop["lat"], stop["lon"], label, color_for_stop))
-
-    if MarkerCluster is not None:
-        if kind in {"accident", "rockfall"} or len(marker_points) > 50:
-            marker_parent = MarkerCluster(name=f"{kind}_cluster").add_to(fg)
-        if kind == "bus":
-            marker_parent = MarkerCluster(name="bus_stops_cluster").add_to(fg)
-            bus_marker_parent = MarkerCluster(name="bus_cluster").add_to(fg)
 
     # ---- [추가 최적화] 포인트가 아주 많으면 FastMarkerCluster로 "기본 표시"만 빠르게 렌더 ----
     #  - 클릭 팝업(상세 HTML) 생성이 렌더 시간을 크게 잡아먹어서,
@@ -1231,7 +1219,7 @@ def render_ulleung_folium_map(
 
             folium.CircleMarker(
                 location=(lat, lon),
-                radius=5,
+                radius=2,
                 color=m_color,
                 fill=True,
                 fill_opacity=0.85,
@@ -1273,7 +1261,7 @@ def render_ulleung_folium_map(
                     ).add_to(fg)
                 folium.CircleMarker(
                     location=(lat, lon),
-                    radius=6,
+                    radius=3,
                     color="white",
                     weight=2,
                     fill=True,
@@ -1387,7 +1375,7 @@ def render_ulleung_folium_map(
             else:
                 folium.CircleMarker(
                     location=(bus["lat"], bus["lon"]),
-                    radius=6,
+                    radius=4,
                     color="#222222",
                     weight=2,
                     fill=True,
@@ -1410,7 +1398,7 @@ def render_ulleung_folium_map(
             popup = folium.Popup(popup_html, max_width=240)
             folium.CircleMarker(
                 location=(lat, lon),
-                radius=2,
+                radius=1,
                 color="#2ca02c",
                 fill=True,
                 fill_opacity=0.9,
