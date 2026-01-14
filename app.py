@@ -2818,6 +2818,18 @@ if "view_mode" not in st.session_state:
 
 # 상단 영역 높이 설정
 MAP_H = 360  # 지도 영역 높이(px)
+st.markdown(
+    f"""
+    <style>
+    .stFolium, .stFolium iframe {{
+      width: 100% !important;
+      height: {MAP_H}px !important;
+      min-height: {MAP_H}px !important;
+    }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 with st.container(border=True):
     st.markdown('<div class="card-title">울릉군 지도</div>', unsafe_allow_html=True)
