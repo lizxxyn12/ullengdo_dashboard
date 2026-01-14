@@ -2043,17 +2043,22 @@ def _recent_passenger_stats() -> dict:
     }
 
 
-def _monthly_passenger_stats(days: int = 30) -> dict:
+def _monthly_passenger_stats(
+    days: int = 30, end_dt: pd.Timestamp | None = None
+) -> dict:
     """최근 N일 기준 월간 통계 (여객 합계)."""
     arrive_df = load_passenger_daily("입항")
     depart_df = load_passenger_daily("출항")
 
-    all_dates = pd.concat([arrive_df["date"], depart_df["date"]]).dropna()
-    if all_dates.empty:
-        end_dt = None
-        start_dt = None
+    if end_dt is None:
+        all_dates = pd.concat([arrive_df["date"], depart_df["date"]]).dropna()
+        if all_dates.empty:
+            end_dt = None
+            start_dt = None
+        else:
+            end_dt = all_dates.max()
+            start_dt = end_dt - pd.Timedelta(days=days - 1)
     else:
-        end_dt = all_dates.max()
         start_dt = end_dt - pd.Timedelta(days=days - 1)
 
     def _sum_window(df: pd.DataFrame):
@@ -2144,6 +2149,8 @@ def _latest_sea_event(df: pd.DataFrame, year: int, kind: str) -> dict:
     def classify(msg: str) -> str | None:
         if not msg:
             return None
+        if re.search(r"[\"'“”]?\s*포항\s*[\"'“”]?\s*(?:→|->|➡|>)\s*울릉", msg):
+            return "입항"
         if any(k in msg for k in arrive_keywords):
             return "입항"
         if any(k in msg for k in depart_keywords):
@@ -2273,6 +2280,8 @@ def _summarize_sms_notice_counts_window(
             return "운항통제"
         if any(k in msg for k in change_keywords):
             return "시간변경"
+        if re.search(r"[\"'“”]?\s*포항\s*[\"'“”]?\s*(?:→|->|➡|>)\s*울릉", msg):
+            return "입항"
         if any(k in msg for k in arrive_keywords):
             return "입항"
         if any(k in msg for k in depart_keywords):
@@ -2419,6 +2428,8 @@ def _summarize_sms_notice_counts(
             return "운항통제"
         if any(k in msg for k in change_keywords):
             return "시간변경"
+        if re.search(r"[\"'“”]?\s*포항\s*[\"'“”]?\s*(?:→|->|➡|>)\s*울릉", msg):
+            return "입항"
         arrive_pos = None
         for p in arrive_route_patterns:
             m = re.search(p, msg)
@@ -2568,6 +2579,8 @@ def _latest_sea_notice(df: pd.DataFrame, year: int = 2025) -> tuple[str, str]:
             return "운항통제"
         if any(k in msg for k in change_keywords):
             return "시간변경"
+        if re.search(r"[\"'“”]?\s*포항\s*[\"'“”]?\s*(?:→|->|➡|>)\s*울릉", msg):
+            return "입항"
         arrive_pos = None
         for p in arrive_route_patterns:
             m = re.search(p, msg)
@@ -2958,9 +2971,26 @@ pax_avgs = load_passenger_daily_avg(2025)
 recent_stats = _recent_passenger_stats()
 latest_arrive_sms = _latest_sea_event(sns_raw, 2025, "입항")
 latest_depart_sms = _latest_sea_event(sns_raw, 2025, "출항")
-monthly_stats = _monthly_passenger_stats(30)
+sms_dates = pd.to_datetime(
+    sns_raw["sms_resDate"].astype(str).str.strip()
+    .str.replace(".", "-", regex=False)
+    .str.replace("/", "-", regex=False),
+    errors="coerce",
+) if not sns_raw.empty and "sms_resDate" in sns_raw.columns else pd.Series(dtype="datetime64[ns]")
+sms_end_dt = sms_dates.dropna().max() if not sms_dates.empty else None
+pax_dates = pd.concat(
+    [
+        load_passenger_daily("입항")["date"],
+        load_passenger_daily("출항")["date"],
+    ],
+    ignore_index=True,
+).dropna()
+pax_end_dt = pax_dates.max() if not pax_dates.empty else None
+
+monthly_ship_window = _monthly_passenger_stats(30, end_dt=sms_end_dt)
+monthly_pax_window = _monthly_passenger_stats(30, end_dt=pax_end_dt)
 monthly_counts, monthly_breakdown = _summarize_sms_notice_counts_window(
-    sns_raw, monthly_stats.get("start_dt"), monthly_stats.get("end_dt")
+    sns_raw, monthly_ship_window.get("start_dt"), monthly_ship_window.get("end_dt")
 )
 
 monthly_arrive_ship = monthly_breakdown["입항"]["선박"]
@@ -3028,7 +3058,7 @@ with c1:
             st.markdown(
                 """
 <div class="r2-head">
-  <div class="r2-title">해상 공지</div>
+  <div class="r2-title">입출항 정보/통계</div>
   <div class="r2-date">2025년 기준</div>
 </div>
                 """,
@@ -3098,10 +3128,10 @@ with c1:
                 st.markdown(recent_html, unsafe_allow_html=True)
 
             with sea_tab_month:
-                start_dt = monthly_stats.get("start_dt")
-                end_dt = monthly_stats.get("end_dt")
-                if start_dt and end_dt:
-                    period_label = f"{start_dt:%Y-%m-%d} ~ {end_dt:%Y-%m-%d}"
+                ship_start = monthly_ship_window.get("start_dt")
+                ship_end = monthly_ship_window.get("end_dt")
+                if ship_start and ship_end:
+                    period_label = f"{ship_start:%Y-%m-%d} ~ {ship_end:%Y-%m-%d}"
                 else:
                     period_label = "데이터 없음"
 
@@ -3137,13 +3167,13 @@ with c1:
     </div>
     <div class="sea-kpi-card">
       <div class="sea-kpi-title">월간 입항객수 합계</div>
-      <div class="sea-kpi-value">{monthly_stats.get("arrive_sum", 0):,}명</div>
-      <div class="sea-kpi-meta">입항차량수 합계: {_fmt_vehicle(monthly_stats.get("arrive_vehicle_sum"))}</div>
+      <div class="sea-kpi-value">{monthly_pax_window.get("arrive_sum", 0):,}명</div>
+      <div class="sea-kpi-meta">입항차량수 합계: {_fmt_vehicle(monthly_pax_window.get("arrive_vehicle_sum"))}</div>
     </div>
     <div class="sea-kpi-card">
       <div class="sea-kpi-title">월간 출항객수 합계</div>
-      <div class="sea-kpi-value">{monthly_stats.get("depart_sum", 0):,}명</div>
-      <div class="sea-kpi-meta">출항차량수 합계: {_fmt_vehicle(monthly_stats.get("depart_vehicle_sum"))}</div>
+      <div class="sea-kpi-value">{monthly_pax_window.get("depart_sum", 0):,}명</div>
+      <div class="sea-kpi-meta">출항차량수 합계: {_fmt_vehicle(monthly_pax_window.get("depart_vehicle_sum"))}</div>
     </div>
   </div>
   <div style="margin-top: 10px;">
