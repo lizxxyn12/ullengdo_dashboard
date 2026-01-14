@@ -1876,6 +1876,32 @@ def load_sms_raw() -> pd.DataFrame:
     return pd.read_csv(path, encoding="utf-8")
 
 
+@st.cache_data(show_spinner=False)
+def load_passenger_daily_avg(year: int = 2025) -> dict:
+    """여객 입출항 일평균(연도 기준)."""
+    data_dir = Path(__file__).parent / "weather_pax"
+    in_path = data_dir / "일별 여객 입항.csv"
+    out_path = data_dir / "일별 여객 출항.csv"
+    if not in_path.exists() or not out_path.exists():
+        return {"입항": 0, "출항": 0}
+
+    def _avg(path: Path) -> int:
+        df = pd.read_csv(path, encoding="utf-8")
+        s = df["출항일"].astype(str).str.strip()
+        s = s.str.replace(".", "-", regex=False).str.replace("/", "-", regex=False)
+        df["출항일"] = pd.to_datetime(s, errors="coerce")
+        df = df[df["출항일"].dt.year == year]
+        if "합계" not in df.columns:
+            return 0
+        df["합계"] = pd.to_numeric(df["합계"], errors="coerce").fillna(0)
+        daily = df.groupby(df["출항일"].dt.date)["합계"].sum()
+        if daily.empty:
+            return 0
+        return int(round(float(daily.mean())))
+
+    return {"입항": _avg(in_path), "출항": _avg(out_path)}
+
+
 def _summarize_sms_notice_counts(
     df: pd.DataFrame, year: int = 2025
 ) -> tuple[dict, int, dict]:
@@ -1905,12 +1931,15 @@ def _summarize_sms_notice_counts(
         "대저해운",
         "대저해운 도착시간",
         "에이치해운",
+        "미래해운",
         "우성해운",
         "주식회사태성해운",
         "태성해운 도착시간",
+        "한국해운",
     ]
     ship_vessel_keywords = [
         "금광11호",
+        "미래15호",
     ]
     people_keywords = [
         "대저페리",
@@ -1929,7 +1958,6 @@ def _summarize_sms_notice_counts(
         "뉴시다오펄호",
         "썬라이즈호",
         "퀸스타2호",
-        "미래15호",
         "익스프레스호",
         "엘도라도EX호",
         "울릉썬플라워크루즈호",
@@ -1939,14 +1967,22 @@ def _summarize_sms_notice_counts(
     cancel_keywords = ["결항", "취소", "출항 취소", "운항 취소"]
     control_keywords = ["운항 통제", "운항통제", "운항이 통제", "통제되었습니다"]
     change_keywords = ["시간 변경", "시간변경", "시간 변경된", "시간변경된"]
-    arrive_keywords = ["입항", "입항 예정", "입항 예정시간", "입항입니다"]
+    arrive_keywords = ["입항", "입항 예정", "입항 예정시간", "입항입니다", "도착", "도착시간"]
     depart_keywords = [
         "출항",
         "출발",
-        "운항예정",
-        "운항 예정",
-        "정상운항",
-        "운항합니다",
+        "출항합니다",
+        "출항 예정",
+        "정상출항",
+        "출발합니다",
+    ]
+    arrive_route_patterns = [
+        r"포항.*?(→|->|➡|>).*?울릉",
+        r"포항\\(영일만항\\).*?→.*?울릉\\(사동항\\)",
+    ]
+    depart_route_patterns = [
+        r"울릉.*?(→|->|➡|>).*?포항",
+        r"울릉\\(사동항\\).*?→.*?포항\\(영일만항\\)",
     ]
 
     def classify(msg: str) -> str | None:
@@ -1958,9 +1994,27 @@ def _summarize_sms_notice_counts(
             return "운항통제"
         if any(k in msg for k in change_keywords):
             return "시간변경"
-        if any(k in msg for k in arrive_keywords):
+        arrive_pos = None
+        for p in arrive_route_patterns:
+            m = re.search(p, msg)
+            if m:
+                arrive_pos = m.start() if arrive_pos is None else min(arrive_pos, m.start())
+        depart_pos = None
+        for p in depart_route_patterns:
+            m = re.search(p, msg)
+            if m:
+                depart_pos = m.start() if depart_pos is None else min(depart_pos, m.start())
+        if arrive_pos is not None and depart_pos is not None:
+            return "출항" if depart_pos < arrive_pos else "입항"
+        if depart_pos is not None:
+            return "출항"
+        if arrive_pos is not None:
             return "입항"
-        if any(k in msg for k in depart_keywords):
+        has_arrive = any(k in msg for k in arrive_keywords)
+        has_depart = any(k in msg for k in depart_keywords)
+        if has_arrive and not has_depart:
+            return "입항"
+        if has_depart and not has_arrive:
             return "출항"
         return None
 
@@ -1980,7 +2034,6 @@ def _summarize_sms_notice_counts(
         return None
 
     seen = set()
-    seen_group = set()
     for _, row in work.iterrows():
         msg = str(row.get("sms_msg", "")).strip()
         if "셔틀" in msg:
@@ -1995,10 +2048,6 @@ def _summarize_sms_notice_counts(
             group = classify_group(msg)
             if group is None:
                 continue
-            key = (day, label, group)
-            if key in seen_group:
-                continue
-            seen_group.add(key)
             breakdown[label][group] += 1
             continue
         key = (day, label)
@@ -2033,12 +2082,15 @@ def _latest_sea_notice(df: pd.DataFrame, year: int = 2025) -> tuple[str, str]:
         "대저해운",
         "대저해운 도착시간",
         "에이치해운",
+        "미래해운",
         "우성해운",
         "주식회사태성해운",
         "태성해운 도착시간",
+        "한국해운",
     ]
     ship_vessel_keywords = [
         "금광11호",
+        "미래15호",
     ]
     people_keywords = [
         "대저페리",
@@ -2057,7 +2109,6 @@ def _latest_sea_notice(df: pd.DataFrame, year: int = 2025) -> tuple[str, str]:
         "뉴시다오펄호",
         "썬라이즈호",
         "퀸스타2호",
-        "미래15호",
         "익스프레스호",
         "엘도라도EX호",
         "울릉썬플라워크루즈호",
@@ -2065,14 +2116,22 @@ def _latest_sea_notice(df: pd.DataFrame, year: int = 2025) -> tuple[str, str]:
     cancel_keywords = ["결항", "취소", "출항 취소", "운항 취소"]
     control_keywords = ["운항 통제", "운항통제", "운항이 통제", "통제되었습니다"]
     change_keywords = ["시간 변경", "시간변경", "시간 변경된", "시간변경된"]
-    arrive_keywords = ["입항", "입항 예정", "입항 예정시간", "입항입니다"]
+    arrive_keywords = ["입항", "입항 예정", "입항 예정시간", "입항입니다", "도착", "도착시간"]
     depart_keywords = [
         "출항",
         "출발",
-        "운항예정",
-        "운항 예정",
-        "정상운항",
-        "운항합니다",
+        "출항합니다",
+        "출항 예정",
+        "정상출항",
+        "출발합니다",
+    ]
+    arrive_route_patterns = [
+        r"포항.*?(→|->|➡|>).*?울릉",
+        r"포항\\(영일만항\\).*?→.*?울릉\\(사동항\\)",
+    ]
+    depart_route_patterns = [
+        r"울릉.*?(→|->|➡|>).*?포항",
+        r"울릉\\(사동항\\).*?→.*?포항\\(영일만항\\)",
     ]
 
     def classify(msg: str) -> str | None:
@@ -2084,9 +2143,27 @@ def _latest_sea_notice(df: pd.DataFrame, year: int = 2025) -> tuple[str, str]:
             return "운항통제"
         if any(k in msg for k in change_keywords):
             return "시간변경"
-        if any(k in msg for k in arrive_keywords):
+        arrive_pos = None
+        for p in arrive_route_patterns:
+            m = re.search(p, msg)
+            if m:
+                arrive_pos = m.start() if arrive_pos is None else min(arrive_pos, m.start())
+        depart_pos = None
+        for p in depart_route_patterns:
+            m = re.search(p, msg)
+            if m:
+                depart_pos = m.start() if depart_pos is None else min(depart_pos, m.start())
+        if arrive_pos is not None and depart_pos is not None:
+            return "출항" if depart_pos < arrive_pos else "입항"
+        if depart_pos is not None:
+            return "출항"
+        if arrive_pos is not None:
             return "입항"
-        if any(k in msg for k in depart_keywords):
+        has_arrive = any(k in msg for k in arrive_keywords)
+        has_depart = any(k in msg for k in depart_keywords)
+        if has_arrive and not has_depart:
+            return "입항"
+        if has_depart and not has_arrive:
             return "출항"
         return None
 
@@ -2451,6 +2528,7 @@ sms_counts, sms_total, sms_breakdown = _summarize_sms_notice_counts(
     year=2025,
 )
 sea_latest_label, sea_latest_text = _latest_sea_notice(load_sms_raw(), year=2025)
+pax_avgs = load_passenger_daily_avg(2025)
 
 
 # [수정] 백분율 계산 로직 개선
@@ -2466,35 +2544,41 @@ def _bar_pct(count: int, total: int, min_pct: int = 6) -> int:
     pct = int(round(count / total * 100))
     return max(pct, min_pct)
 
-# 1. 각 항목의 건수 가져오기
-sea_arrive = sms_counts["입항"]
-sea_depart = sms_counts["출항"]
+# 1. 각 항목의 건수/합계 가져오기
+sea_arrive_ship_total = sms_breakdown["입항"]["선박"]
+sea_depart_ship_total = sms_breakdown["출항"]["선박"]
+sea_arrive_people = pax_avgs.get("입항", 0)
+sea_depart_people = pax_avgs.get("출항", 0)
+sea_arrive = sea_arrive_people
+sea_depart = sea_depart_people
 sea_control = sms_counts["운항통제"]
 sea_cancel = sms_counts["결항"]
 sea_change = sms_counts["시간변경"]
 
 # [수정] 막대 그래프의 '시각적 스케일'을 위해 전체 합(Total)이 아닌 최댓값(Max)을 기준으로 100%를 잡음
-sea_max_val = max(sea_arrive, sea_depart, sea_control, sea_cancel, sea_change)
+sea_max_val = max(
+    sea_arrive,
+    sea_depart,
+    sea_arrive_ship_total,
+    sea_depart_ship_total,
+    sea_control,
+    sea_cancel,
+    sea_change,
+)
 if sea_max_val == 0:
     sea_max_val = 1
 
 sea_arrive_pct = _bar_pct(sea_arrive, sea_max_val)
 sea_depart_pct = _bar_pct(sea_depart, sea_max_val)
+sea_arrive_ship_pct = _bar_pct(sea_arrive_ship_total, sea_max_val)
+sea_depart_ship_pct = _bar_pct(sea_depart_ship_total, sea_max_val)
 sea_control_pct = _bar_pct(sea_control, sea_max_val)
 sea_cancel_pct = _bar_pct(sea_cancel, sea_max_val)
 sea_change_pct = _bar_pct(sea_change, sea_max_val)
 
 # 2. 내부 분할(선박/사람) 비율은 해당 항목의 합계를 기준으로 계산 (이건 기존 유지)
-sea_arrive_ship = sms_breakdown["입항"]["선박"]
-sea_arrive_people = sms_breakdown["입항"]["사람"]
-sea_depart_ship = sms_breakdown["출항"]["선박"]
-sea_depart_people = sms_breakdown["출항"]["사람"]
-
-# 내부 세그먼트 비율 계산
-sea_arrive_ship_pct = _pct(sea_arrive_ship, sea_arrive)
-sea_arrive_people_pct = 100 - sea_arrive_ship_pct if sea_arrive > 0 else 0
-sea_depart_ship_pct = _pct(sea_depart_ship, sea_depart)
-sea_depart_people_pct = 100 - sea_depart_ship_pct if sea_depart > 0 else 0
+sea_arrive_people_pct = 100
+sea_depart_people_pct = 100
 
 st.write("")
 c1, c2 = st.columns(2, gap="large")
@@ -2521,26 +2605,23 @@ with c1:
   </div>
 
   <div class="sea-section">
-    <div class="sea-section-title">연도별 통계 요약(2025년 기준)</div>
+    <div class="sea-section-title">공지 키워드별 분석(2025년 기준)</div>
     <div class="sea-bars">
       <div class="bar-row">
         <div class="bar-label">
           <div class="bar-label-wrap">
-            <span>입항 전체</span>
-            <span class="bar-sub">(선박/사람)</span>
+            <span>입항</span>
+            <span class="bar-sub">(배 당 입도객 평균)</span>
             <span class="help-pop">
               <span class="help-pop-btn">?</span>
               <span class="help-pop-body">
-                입항 알림 합계: <b>{sea_arrive:,}건</b><br/>
-                선박: {sea_arrive_ship}건, 사람: {sea_arrive_people}명
+                배 당 여객 입항 평균: <b>{sea_arrive_people:,}명</b>
               </span>
             </span>
           </div>
         </div>
         <div class="bar-track">
-          <div class="bar-fill-split" style="width:{sea_arrive_pct}%;">
-            <div class="bar-seg" style="width:{sea_arrive_ship_pct}%; background:#ff8a3d;"></div>
-            <div class="bar-seg" style="width:{sea_arrive_people_pct}%; background:#ffd3a8;"></div>
+          <div class="bar-fill" style="width:{sea_arrive_pct}%; background:#ffd3a8;">
             <div class="bar-value-onfill">{sea_arrive:,}</div>
           </div>
         </div>
@@ -2549,21 +2630,18 @@ with c1:
       <div class="bar-row">
         <div class="bar-label">
           <div class="bar-label-wrap">
-            <span>출항 전체</span>
-            <span class="bar-sub">(선박/사람)</span>
+            <span>출항</span>
+            <span class="bar-sub">(배 당 출도객 평균)</span>
             <span class="help-pop">
               <span class="help-pop-btn">?</span>
               <span class="help-pop-body">
-                출항 알림 합계: <b>{sea_depart:,}건</b><br/>
-                선박: {sea_depart_ship}건, 사람: {sea_depart_people}명
+                배 당 여객 출항 평균: <b>{sea_depart_people:,}명</b>
               </span>
             </span>
           </div>
         </div>
         <div class="bar-track">
-          <div class="bar-fill-split" style="width:{sea_depart_pct}%;">
-            <div class="bar-seg" style="width:{sea_depart_ship_pct}%; background:#00b3a4;"></div>
-            <div class="bar-seg" style="width:{sea_depart_people_pct}%; background:#8fe3da;"></div>
+          <div class="bar-fill" style="width:{sea_depart_pct}%; background:#8fe3da;">
             <div class="bar-value-onfill">{sea_depart:,}</div>
           </div>
         </div>
@@ -2572,13 +2650,53 @@ with c1:
       <div class="bar-row">
         <div class="bar-label">
           <div class="bar-label-wrap">
-            <span>운항통제</span>
-            <span class="bar-sub">(건수)</span>
+            <span>입항 선박 수</span>
+            <span class="bar-sub">(합계)</span>
             <span class="help-pop">
               <span class="help-pop-btn">?</span>
               <span class="help-pop-body">
-                기상 악화 등으로 통제된 알림 수입니다.<br/>
-                배 운항통제 건수: {sea_control:,}건
+                2025년 입항 선박 합계: <b>{sea_arrive_ship_total:,}건</b>
+              </span>
+            </span>
+          </div>
+        </div>
+        <div class="bar-track">
+          <div class="bar-fill" style="width:{sea_arrive_ship_pct}%; background:#ff8a3d;">
+            <div class="bar-value-onfill">{sea_arrive_ship_total:,}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="bar-row">
+        <div class="bar-label">
+          <div class="bar-label-wrap">
+            <span>출항 선박 수</span>
+            <span class="bar-sub">(합계)</span>
+            <span class="help-pop">
+              <span class="help-pop-btn">?</span>
+              <span class="help-pop-body">
+                2025년 출항 선박 합계: <b>{sea_depart_ship_total:,}건</b>
+              </span>
+            </span>
+          </div>
+        </div>
+        <div class="bar-track">
+          <div class="bar-fill" style="width:{sea_depart_ship_pct}%; background:#00b3a4;">
+            <div class="bar-value-onfill">{sea_depart_ship_total:,}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="bar-row">
+        <div class="bar-label">
+          <div class="bar-label-wrap">
+            <span>운항통제</span>
+            <span class="bar-sub">(합계)</span>
+            <span class="help-pop">
+              <span class="help-pop-btn">?</span>
+              <span class="help-pop-body">
+                2025년 기상 악화 등으로 통제된 선박 수입니다.<br/>
+                배 운항통제 합계: {sea_control:,}건
               </span>
             </span>
           </div>
@@ -2594,12 +2712,12 @@ with c1:
         <div class="bar-label">
           <div class="bar-label-wrap">
             <span>결항</span>
-            <span class="bar-sub">(건수)</span>
+            <span class="bar-sub">(합계)</span>
             <span class="help-pop">
               <span class="help-pop-btn">?</span>
               <span class="help-pop-body">
-                기상 또는 점검 사유로 취소된 알림 수입니다.<br/>
-                배 결항 건수: {sea_cancel:,}건
+                2025년 기상 또는 점검 사유로 취소된 선박 수입니다.<br/>
+                배 결항 합계: {sea_cancel:,}건
               </span>
             </span>
           </div>
@@ -2615,12 +2733,12 @@ with c1:
         <div class="bar-label">
           <div class="bar-label-wrap">
             <span>시간변경</span>
-            <span class="bar-sub">(건수)</span>
+            <span class="bar-sub">(합계)</span>
             <span class="help-pop">
               <span class="help-pop-btn">?</span>
               <span class="help-pop-body">
-                출항/입항 시간이 변경된 알림 수입니다.<br/>
-                배 시간변경 건수: {sea_change:,}건
+                2025년 출항/입항 시간이 변경된 선박 수입니다.<br/>
+                배 시간변경 합계: {sea_change:,}건
               </span>
             </span>
           </div>
