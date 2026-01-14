@@ -226,6 +226,46 @@ div[data-testid="stDialog"] img { max-height: 86vh; width: 100%; object-fit: con
   margin-bottom: 8px;
   letter-spacing: 0.2px;
 }
+.sea-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.sea-kpi-card {
+  background: #ffffff;
+  border: 1px solid #e8ebf2;
+  border-radius: 14px;
+  padding: 12px;
+}
+.sea-kpi-title {
+  font-weight: 700;
+  color: #1f2937;
+}
+.sea-kpi-value {
+  font-size: 1.2rem;
+  font-weight: 800;
+  margin-top: 4px;
+}
+.sea-kpi-meta {
+  color: #6b7280;
+  font-size: 0.82rem;
+  margin-top: 6px;
+  line-height: 1.4;
+}
+.sea-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.sea-badge {
+  background: #fff4e5;
+  color: #b54708;
+  border: 1px solid #f4c790;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
 .sea-latest {
   display: flex;
   align-items: center;
@@ -1903,6 +1943,390 @@ def load_passenger_daily_avg(year: int = 2025) -> dict:
     return {"입항": _avg(in_path), "출항": _avg(out_path)}
 
 
+@st.cache_data(show_spinner=False)
+def load_passenger_daily(kind: str) -> pd.DataFrame:
+    """일별 여객 입출항 데이터 로드 (최근 통계용)."""
+    data_dir = Path(__file__).parent / "weather_pax"
+    if kind == "입항":
+        path = data_dir / "일별 여객 입항.csv"
+    else:
+        path = data_dir / "일별 여객 출항.csv"
+    if not path.exists():
+        return pd.DataFrame()
+
+    df = pd.read_csv(path, encoding="utf-8")
+    df.columns = [str(c).strip() for c in df.columns]
+    if "출항일" not in df.columns:
+        return pd.DataFrame()
+
+    s = df["출항일"].astype(str).str.strip()
+    s = s.str.replace(".", "-", regex=False).str.replace("/", "-", regex=False)
+    df["date"] = pd.to_datetime(s, errors="coerce").dt.normalize()
+    df = df.dropna(subset=["date"]).copy()
+    if "합계" not in df.columns:
+        return pd.DataFrame()
+    df["passengers"] = pd.to_numeric(df["합계"], errors="coerce").fillna(0).astype(int)
+
+    vehicle_file = None
+    for f in data_dir.iterdir():
+        if not f.is_file() or not f.name.endswith(".csv"):
+            continue
+        name = unicodedata.normalize("NFC", f.name)
+        if "차량" in name and kind in name:
+            vehicle_file = f
+            break
+
+    if vehicle_file is not None:
+        vdf = pd.read_csv(vehicle_file, encoding="utf-8")
+        vdf.columns = [str(c).strip() for c in vdf.columns]
+        if "출항일" in vdf.columns:
+            vs = vdf["출항일"].astype(str).str.strip()
+            vs = vs.str.replace(".", "-", regex=False).str.replace("/", "-", regex=False)
+            vdf["date"] = pd.to_datetime(vs, errors="coerce").dt.normalize()
+            vdf = vdf.dropna(subset=["date"]).copy()
+            if "건수" in vdf.columns:
+                vdf["vehicles"] = (
+                    vdf["건수"]
+                    .astype(str)
+                    .str.replace(",", "", regex=False)
+                    .pipe(pd.to_numeric, errors="coerce")
+                    .fillna(0)
+                    .astype(int)
+                )
+                df = df.merge(vdf[["date", "vehicles"]], on="date", how="left")
+                df["vehicles"] = pd.to_numeric(
+                    df["vehicles"], errors="coerce"
+                ).fillna(0).astype(int)
+            else:
+                df["vehicles"] = None
+        else:
+            df["vehicles"] = None
+    else:
+        df["vehicles"] = None
+
+    return df[["date", "passengers", "vehicles"]]
+
+
+def _recent_passenger_stats() -> dict:
+    """최근 입항/출항 1건 및 최근 3회 평균."""
+    arrive_df = load_passenger_daily("입항")
+    depart_df = load_passenger_daily("출항")
+
+    def _latest(df: pd.DataFrame):
+        if df.empty:
+            return {"date": None, "passengers": 0, "vehicles": None}
+        row = df.sort_values("date", ascending=False).iloc[0]
+        return {
+            "date": row["date"],
+            "passengers": int(row["passengers"]),
+            "vehicles": row.get("vehicles", None),
+        }
+
+    def _avg_last3(df: pd.DataFrame):
+        if df.empty:
+            return {"passengers": 0, "vehicles": None}
+        recent = df.sort_values("date", ascending=False).head(3)
+        return {
+            "passengers": int(round(float(recent["passengers"].mean()))),
+            "vehicles": (
+                int(round(float(recent["vehicles"].mean())))
+                if "vehicles" in recent.columns and recent["vehicles"].notna().any()
+                else None
+            ),
+        }
+
+    return {
+        "arrive_latest": _latest(arrive_df),
+        "depart_latest": _latest(depart_df),
+        "arrive_avg3": _avg_last3(arrive_df),
+        "depart_avg3": _avg_last3(depart_df),
+    }
+
+
+def _monthly_passenger_stats(days: int = 30) -> dict:
+    """최근 N일 기준 월간 통계 (여객 합계)."""
+    arrive_df = load_passenger_daily("입항")
+    depart_df = load_passenger_daily("출항")
+
+    all_dates = pd.concat([arrive_df["date"], depart_df["date"]]).dropna()
+    if all_dates.empty:
+        end_dt = None
+        start_dt = None
+    else:
+        end_dt = all_dates.max()
+        start_dt = end_dt - pd.Timedelta(days=days - 1)
+
+    def _sum_window(df: pd.DataFrame):
+        if df.empty or start_dt is None or end_dt is None:
+            return 0
+        window = df[(df["date"] >= start_dt) & (df["date"] <= end_dt)]
+        return int(window["passengers"].sum())
+
+    def _sum_vehicle_window(df: pd.DataFrame):
+        if df.empty or start_dt is None or end_dt is None:
+            return None
+        if "vehicles" not in df.columns or df["vehicles"].isna().all():
+            return None
+        window = df[(df["date"] >= start_dt) & (df["date"] <= end_dt)]
+        return int(window["vehicles"].sum())
+
+    return {
+        "start_dt": start_dt,
+        "end_dt": end_dt,
+        "arrive_sum": _sum_window(arrive_df),
+        "depart_sum": _sum_window(depart_df),
+        "arrive_vehicle_sum": _sum_vehicle_window(arrive_df),
+        "depart_vehicle_sum": _sum_vehicle_window(depart_df),
+    }
+
+
+def _latest_sea_event(df: pd.DataFrame, year: int, kind: str) -> dict:
+    """SMS에서 최신 입항/출항 이벤트 추출."""
+    if df.empty or "sms_resDate" not in df.columns or "sms_msg" not in df.columns:
+        return {"datetime": None, "name": "정보 없음"}
+
+    work = df.copy()
+    s = work["sms_resDate"].astype(str).str.strip()
+    s = s.str.replace(".", "-", regex=False).str.replace("/", "-", regex=False)
+    work["sms_resDate"] = pd.to_datetime(s, errors="coerce")
+    work = work[work["sms_resDate"].dt.year == year]
+    work = work.dropna(subset=["sms_resDate"])
+    if work.empty:
+        return {"datetime": None, "name": "정보 없음"}
+
+    ship_keywords = [
+        "금광해운",
+        "대저해운",
+        "대저해운 도착시간",
+        "에이치해운",
+        "미래해운",
+        "우성해운",
+        "주식회사태성해운",
+        "태성해운 도착시간",
+    ]
+    ship_vessel_keywords = [
+        "금광11호",
+    ]
+    people_keywords = [
+        "대저페리",
+        "썬라이즈 도착시간",
+        "씨스포빌",
+        "씨스포빌 도착시간",
+        "울릉크루즈",
+        "제이에이치페리",
+        "제이에이치페리 도착시간",
+    ]
+    people_vessel_keywords = [
+        "씨스타11호",
+        "씨스타1호",
+        "씨스타5호",
+        "뉴씨다오펄호",
+        "뉴시다오펄호",
+        "썬라이즈호",
+        "퀸스타2호",
+        "미래15호",
+        "익스프레스호",
+        "엘도라도EX호",
+        "울릉썬플라워크루즈호",
+    ]
+    arrive_keywords = ["입항", "입항 예정", "입항 예정시간", "입항입니다", "도착", "도착시간"]
+    depart_keywords = [
+        "출항",
+        "출발",
+        "운항예정",
+        "운항 예정",
+        "정상운항",
+        "운항합니다",
+        "출항 예정",
+        "정상출항",
+    ]
+
+    def classify(msg: str) -> str | None:
+        if not msg:
+            return None
+        if any(k in msg for k in arrive_keywords):
+            return "입항"
+        if any(k in msg for k in depart_keywords):
+            return "출항"
+        return None
+
+    candidates = []
+    for _, row in work.iterrows():
+        msg = str(row.get("sms_msg", "")).strip()
+        if not msg or "셔틀" in msg:
+            continue
+        label = classify(msg)
+        if label != kind:
+            continue
+        candidates.append((row["sms_resDate"], msg))
+
+    if not candidates:
+        return {"datetime": None, "name": "정보 없음"}
+
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    dt, msg = candidates[0]
+    names = (
+        ship_keywords
+        + ship_vessel_keywords
+        + people_keywords
+        + people_vessel_keywords
+    )
+    names = sorted(names, key=len, reverse=True)
+    name = next((n for n in names if n in msg), "선박 정보 없음")
+
+    time_match = re.search(r"(\d{1,2})[:시](\d{2})", msg)
+    if time_match:
+        time_text = f"{int(time_match.group(1)):02d}:{time_match.group(2)}"
+    else:
+        time_text = dt.strftime("%H:%M") if dt else ""
+    dt_text = dt.strftime("%Y-%m-%d") if dt else "미상"
+    return {"datetime": f"{dt_text} {time_text}".strip(), "name": name}
+
+
+def _summarize_sms_notice_counts_window(
+    df: pd.DataFrame, start_dt: pd.Timestamp | None, end_dt: pd.Timestamp | None
+) -> tuple[dict, dict]:
+    """최근 기간 기준 SMS 통계 요약."""
+    counts = {
+        "입항": 0,
+        "출항": 0,
+        "운항통제": 0,
+        "결항": 0,
+        "시간변경": 0,
+    }
+    breakdown = {
+        "입항": {"선박": 0, "사람": 0},
+        "출항": {"선박": 0, "사람": 0},
+    }
+    if df.empty or "sms_resDate" not in df.columns or "sms_msg" not in df.columns:
+        return counts, breakdown
+    if start_dt is None or end_dt is None:
+        return counts, breakdown
+
+    work = df.copy()
+    s = work["sms_resDate"].astype(str).str.strip()
+    s = s.str.replace(".", "-", regex=False).str.replace("/", "-", regex=False)
+    work["sms_resDate"] = pd.to_datetime(s, errors="coerce")
+    work = work.dropna(subset=["sms_resDate"])
+    work = work[(work["sms_resDate"] >= start_dt) & (work["sms_resDate"] <= end_dt)]
+    if work.empty:
+        return counts, breakdown
+
+    ship_keywords = [
+        "금광해운",
+        "대저해운",
+        "대저해운 도착시간",
+        "에이치해운",
+        "미래해운",
+        "우성해운",
+        "주식회사태성해운",
+        "태성해운 도착시간",
+    ]
+    ship_vessel_keywords = [
+        "금광11호",
+    ]
+    people_keywords = [
+        "대저페리",
+        "썬라이즈 도착시간",
+        "씨스포빌",
+        "씨스포빌 도착시간",
+        "울릉크루즈",
+        "제이에이치페리",
+        "제이에이치페리 도착시간",
+    ]
+    people_vessel_keywords = [
+        "씨스타11호",
+        "씨스타1호",
+        "씨스타5호",
+        "뉴씨다오펄호",
+        "뉴시다오펄호",
+        "썬라이즈호",
+        "퀸스타2호",
+        "미래15호",
+        "익스프레스호",
+        "엘도라도EX호",
+        "울릉썬플라워크루즈호",
+    ]
+    passenger_keywords = ["탑승인원", "여객", "승객", "승선", "크루즈"]
+    cargo_keywords = ["화물", "차량", "선적", "택배", "물류"]
+    cancel_keywords = ["결항", "취소", "출항 취소", "운항 취소"]
+    control_keywords = ["운항 통제", "운항통제", "운항이 통제", "통제되었습니다"]
+    change_keywords = ["시간 변경", "시간변경", "시간 변경된", "시간변경된"]
+    arrive_keywords = ["입항", "입항 예정", "입항 예정시간", "입항입니다", "도착", "도착시간"]
+    depart_keywords = [
+        "출항",
+        "출발",
+        "운항예정",
+        "운항 예정",
+        "정상운항",
+        "운항합니다",
+        "출항 예정",
+        "정상출항",
+    ]
+
+    def classify(msg: str) -> str | None:
+        if not msg:
+            return None
+        if any(k in msg for k in cancel_keywords):
+            return "결항"
+        if any(k in msg for k in control_keywords):
+            return "운항통제"
+        if any(k in msg for k in change_keywords):
+            return "시간변경"
+        if any(k in msg for k in arrive_keywords):
+            return "입항"
+        if any(k in msg for k in depart_keywords):
+            return "출항"
+        return None
+
+    def classify_group(msg: str) -> str | None:
+        if (
+            any(k in msg for k in ship_keywords)
+            or any(k in msg for k in ship_vessel_keywords)
+            or any(k in msg for k in cargo_keywords)
+        ):
+            return "선박"
+        if (
+            any(k in msg for k in people_keywords)
+            or any(k in msg for k in people_vessel_keywords)
+            or any(k in msg for k in passenger_keywords)
+        ):
+            return "사람"
+        return None
+
+    seen = set()
+    seen_group = set()
+    for _, row in work.iterrows():
+        msg = str(row.get("sms_msg", "")).strip()
+        if "셔틀" in msg:
+            continue
+        label = classify(msg)
+        if not label:
+            continue
+        day = row["sms_resDate"].date() if pd.notna(row["sms_resDate"]) else None
+        if day is None:
+            continue
+        if label in ("입항", "출항"):
+            group = classify_group(msg)
+            if group is None:
+                continue
+            key = (day, label, group)
+            if key in seen_group:
+                continue
+            seen_group.add(key)
+            breakdown[label][group] += 1
+            continue
+        key = (day, label)
+        if key in seen:
+            continue
+        seen.add(key)
+        counts[label] += 1
+
+    counts["입항"] = breakdown["입항"]["선박"] + breakdown["입항"]["사람"]
+    counts["출항"] = breakdown["출항"]["선박"] + breakdown["출항"]["사람"]
+    return counts, breakdown
+
+
 def _summarize_sms_notice_counts(
     df: pd.DataFrame, year: int = 2025
 ) -> tuple[dict, int, dict]:
@@ -2524,12 +2948,26 @@ st.write("")  # 약간의 여백
 # =============================
 # Row 2: Layer 2개 (해상공지 / 도로통제)
 # =============================
+sns_raw = load_sms_raw()
 sms_counts, sms_total, sms_breakdown = _summarize_sms_notice_counts(
-    load_sms_raw(),
+    sns_raw,
     year=2025,
 )
-sea_latest_label, sea_latest_text = _latest_sea_notice(load_sms_raw(), year=2025)
+sea_latest_label, sea_latest_text = _latest_sea_notice(sns_raw, year=2025)
 pax_avgs = load_passenger_daily_avg(2025)
+recent_stats = _recent_passenger_stats()
+latest_arrive_sms = _latest_sea_event(sns_raw, 2025, "입항")
+latest_depart_sms = _latest_sea_event(sns_raw, 2025, "출항")
+monthly_stats = _monthly_passenger_stats(30)
+monthly_counts, monthly_breakdown = _summarize_sms_notice_counts_window(
+    sns_raw, monthly_stats.get("start_dt"), monthly_stats.get("end_dt")
+)
+
+monthly_arrive_ship = monthly_breakdown["입항"]["선박"]
+monthly_depart_ship = monthly_breakdown["출항"]["선박"]
+monthly_control = monthly_counts["운항통제"]
+monthly_cancel = monthly_counts["결항"]
+monthly_change = monthly_counts["시간변경"]
 
 
 # [수정] 백분율 계산 로직 개선
@@ -2587,26 +3025,142 @@ c1, c2 = st.columns(2, gap="large")
 with c1:
     with st.container(border=True):
         if show_sea_notice:
-            html = "\n".join(
-                line.lstrip()
-                for line in textwrap.dedent(
-                    f"""
-<div class="r2-card">
-  <div class="r2-head">
-    <div class="r2-title">해상 공지</div>
-    <div class="r2-date">2025년 기준</div>
-  </div>
+            st.markdown(
+                """
+<div class="r2-head">
+  <div class="r2-title">해상 공지</div>
+  <div class="r2-date">2025년 기준</div>
+</div>
+                """,
+                unsafe_allow_html=True,
+            )
+            sea_tab_recent, sea_tab_month, sea_tab_year = st.tabs(
+                ["최근통계", "월간통계", "연간통계(2025)"]
+            )
 
-  <div class="sea-section">
-    <div class="sea-section-title">최신 공지</div>
-    <div class="sea-latest">
-      <div class="sea-pill">{sea_latest_label}</div>
-      <div class="sea-latest-text">{sea_latest_text}</div>
+            arrive_latest = recent_stats["arrive_latest"]
+            depart_latest = recent_stats["depart_latest"]
+            arrive_avg3 = recent_stats["arrive_avg3"]
+            depart_avg3 = recent_stats["depart_avg3"]
+
+            def _fmt_date_label(primary: str | None, fallback_dt: datetime | None):
+                if primary:
+                    return primary
+                if fallback_dt:
+                    return fallback_dt.strftime("%Y-%m-%d")
+                return "미상"
+
+            def _fmt_vehicle(val):
+                if val is None or (isinstance(val, float) and pd.isna(val)):
+                    return "-"
+                return f"{int(val):,}대"
+
+            arrive_dt_label = _fmt_date_label(
+                latest_arrive_sms.get("datetime"), arrive_latest.get("date")
+            )
+            depart_dt_label = _fmt_date_label(
+                latest_depart_sms.get("datetime"), depart_latest.get("date")
+            )
+
+            with sea_tab_recent:
+                recent_html = f"""
+<div class="sea-section">
+  <div class="sea-section-title">가장 최근 이벤트</div>
+  <div class="sea-kpi-grid">
+    <div class="sea-kpi-card">
+      <div class="sea-kpi-title">최근 입항 1건</div>
+      <div class="sea-kpi-value">{arrive_latest.get("passengers", 0):,}명</div>
+      <div class="sea-kpi-meta">
+        일시: {arrive_dt_label}<br/>
+        선박명: {latest_arrive_sms.get("name")}<br/>
+        입항차량수: {_fmt_vehicle(arrive_latest.get("vehicles"))}
+      </div>
+    </div>
+    <div class="sea-kpi-card">
+      <div class="sea-kpi-title">최근 출항 1건</div>
+      <div class="sea-kpi-value">{depart_latest.get("passengers", 0):,}명</div>
+      <div class="sea-kpi-meta">
+        일시: {depart_dt_label}<br/>
+        선박명: {latest_depart_sms.get("name")}<br/>
+        출항차량수: {_fmt_vehicle(depart_latest.get("vehicles"))}
+      </div>
+    </div>
+    <div class="sea-kpi-card" style="grid-column: 1 / -1;">
+      <div class="sea-kpi-title">최근 3회 평균</div>
+      <div class="sea-kpi-meta">
+        평균 입항객수: {arrive_avg3.get("passengers", 0):,}명 · 평균 입항차량수: {_fmt_vehicle(arrive_avg3.get("vehicles"))}<br/>
+        평균 출항객수: {depart_avg3.get("passengers", 0):,}명 · 평균 출항차량수: {_fmt_vehicle(depart_avg3.get("vehicles"))}
+      </div>
     </div>
   </div>
+</div>
+                """
+                st.markdown(recent_html, unsafe_allow_html=True)
 
+            with sea_tab_month:
+                start_dt = monthly_stats.get("start_dt")
+                end_dt = monthly_stats.get("end_dt")
+                if start_dt and end_dt:
+                    period_label = f"{start_dt:%Y-%m-%d} ~ {end_dt:%Y-%m-%d}"
+                else:
+                    period_label = "데이터 없음"
+
+                badges = []
+                if monthly_cancel > 0:
+                    badges.append(f"⚠️ 결항 {monthly_cancel}건")
+                if monthly_control > 0:
+                    badges.append(f"⚠️ 운항통제 {monthly_control}건")
+                if monthly_change > 0:
+                    badges.append(f"⚠️ 시간변경 {monthly_change}건")
+
+                if badges:
+                    badge_items = "".join(
+                        [f"<span class='sea-badge'>{b}</span>" for b in badges]
+                    )
+                    badge_html = f"<div class='sea-badges'>{badge_items}</div>"
+                else:
+                    badge_html = (
+                        "<div class='sea-badges'><span class='sea-badge'>이번 달 이슈 없음</span></div>"
+                    )
+
+                month_html = f"""
+<div class="sea-section">
+  <div class="sea-section-title">최근 30일 기준</div>
+  <div class="sea-kpi-grid">
+    <div class="sea-kpi-card">
+      <div class="sea-kpi-title">기간</div>
+      <div class="sea-kpi-meta">{period_label}</div>
+    </div>
+    <div class="sea-kpi-card">
+      <div class="sea-kpi-title">월간 선박 수</div>
+      <div class="sea-kpi-meta">입항 {monthly_arrive_ship}건 · 출항 {monthly_depart_ship}건</div>
+    </div>
+    <div class="sea-kpi-card">
+      <div class="sea-kpi-title">월간 입항객수 합계</div>
+      <div class="sea-kpi-value">{monthly_stats.get("arrive_sum", 0):,}명</div>
+      <div class="sea-kpi-meta">입항차량수 합계: {_fmt_vehicle(monthly_stats.get("arrive_vehicle_sum"))}</div>
+    </div>
+    <div class="sea-kpi-card">
+      <div class="sea-kpi-title">월간 출항객수 합계</div>
+      <div class="sea-kpi-value">{monthly_stats.get("depart_sum", 0):,}명</div>
+      <div class="sea-kpi-meta">출항차량수 합계: {_fmt_vehicle(monthly_stats.get("depart_vehicle_sum"))}</div>
+    </div>
+  </div>
+  <div style="margin-top: 10px;">
+    {badge_html}
+  </div>
+</div>
+                """
+                st.markdown(month_html, unsafe_allow_html=True)
+
+            with sea_tab_year:
+                html = "\n".join(
+                    line.lstrip()
+                    for line in textwrap.dedent(
+                        f"""
+<div class="r2-card">
   <div class="sea-section">
-    <div class="sea-section-title">공지 키워드별 분석(2025년 기준)</div>
+    <div class="sea-section-title">연간 통계 (2025년 기준)</div>
     <div class="sea-bars">
       <div class="bar-row">
         <div class="bar-label">
@@ -2753,10 +3307,10 @@ with c1:
     </div>
   </div>
 </div>
-                    """
-                ).splitlines()
-            )
-            st.markdown(html, unsafe_allow_html=True)
+                        """
+                    ).splitlines()
+                )
+                st.markdown(html, unsafe_allow_html=True)
         else:
             st.caption("사이드바에서 해상공지 레이어가 꺼져있음")
 
