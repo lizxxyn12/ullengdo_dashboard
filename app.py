@@ -3521,7 +3521,7 @@ if show_graphs:
             )
             monthly = load_weather_passenger_monthly()
             if monthly.empty:
-                st.info("weather_pax 폴더의 강수량/여객 CSV 파일을 찾지 못했어.")
+                st.info("weather_pax 폴더의 강수량/여객 CSV 파일을 찾지 못했어요.")
             else:
                 mode = st.selectbox(
                     "집계 기준",
