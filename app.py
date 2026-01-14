@@ -180,7 +180,7 @@ div[data-testid="stDialog"] > div { width: min(96vw, 1400px); margin: 0 auto; }
 div[data-testid="stDialog"] div[role="dialog"] { max-height: 92vh; padding: 0; }
 div[data-testid="stDialog"] img { max-height: 86vh; width: 100%; object-fit: contain; display: block; }
 
-/* --- [NEW] Card & Sea Notice Styles --- */
+/* --- Card & Sea Notice Styles --- */
 .r2-card {
   background: #f6f7fb;
   border: 1px solid #ebedf3;
@@ -608,14 +608,6 @@ def _build_accident_points(
     return sample_points, acc_points_meta
 
 
-@st.cache_data(show_spinner=False)
-def _cached_accident_points(
-    file_signature: tuple, max_points: int = 2000
-) -> tuple[list[tuple[float, float, str]], list[dict]]:
-    df_acc = load_accidents_csv(file_signature)
-    return _build_accident_points(df_acc, max_points=max_points)
-
-
 def _build_folium_base_map(
     kind: str,
     accident_signature: tuple | None = None,
@@ -663,8 +655,18 @@ def _build_folium_base_map(
         routes, bus_stops_meta = build_bus_routes()
         if not bus_stops_meta:
             bus_stops_meta = [
-                {"name": "버스정류장(샘플)", "lat": 37.4868, "lon": 130.9098, "routes": ["샘플"]},
-                {"name": "버스정류장(샘플2)", "lat": 37.4758, "lon": 130.9032, "routes": ["샘플"]},
+                {
+                    "name": "버스정류장(샘플)",
+                    "lat": 37.4868,
+                    "lon": 130.9098,
+                    "routes": ["샘플"],
+                },
+                {
+                    "name": "버스정류장(샘플2)",
+                    "lat": 37.4758,
+                    "lon": 130.9032,
+                    "routes": ["샘플"],
+                },
             ]
         if selected_route_id:
             route_name_map = {r["id"]: r["name"] for r in _bus_route_defs()}
@@ -1047,7 +1049,7 @@ def load_rockfall_points() -> tuple[list[tuple[float, float, str]], list[dict]]:
         points, meta = _build_from_coords_df(_read_csv_safely(coords_final_path))
         if points:
             return points, meta
-    return [], [] # Fallback empty if file not found
+    return [], []  # Fallback empty if file not found
 
 
 @st.cache_data(show_spinner=False)
@@ -1255,39 +1257,6 @@ def _simulate_bus_positions(routes, per_route: int = 2):
                 {
                     "route_id": route_id,
                     "route_name": route.get("name", ""),
-                    "lat": lat,
-                    "lon": lon,
-                    "index": i + 1,
-                }
-            )
-    return positions
-
-
-# CACHED
-@st.cache_data(show_spinner=False)
-def _simulate_bus_positions_cached(route_payload: tuple, per_route: int = 2):
-    positions = []
-    for route_id, points in route_payload:
-        points = list(points)
-        if len(points) < 2:
-            continue
-        total, segments = _polyline_segments(points)
-        if total <= 0:
-            continue
-        route_id = str(route_id).strip()
-        jitter = (sum(ord(c) for c in route_id) % 7) * 0.01
-        for i in range(per_route):
-            frac = (i + 1) / (per_route + 1) + jitter
-            frac = frac % 1.0
-            distance = total * frac
-            point = _point_on_segments(segments, distance)
-            if point is None:
-                continue
-            lat, lon = point
-            positions.append(
-                {
-                    "route_id": route_id,
-                    "route_name": "",
                     "lat": lat,
                     "lon": lon,
                     "index": i + 1,
@@ -1532,28 +1501,6 @@ def load_enforcement_counts_csv() -> pd.DataFrame:
     return df
 
 
-def _summarize_accident_counts(df: pd.DataFrame, mode: str) -> pd.Series:
-    """연도별/월별 사고 건수 요약."""
-    if df.empty:
-        return pd.Series(dtype="int64")
-
-    work = df.copy()
-    if "연도" not in work.columns or "월" not in work.columns:
-        if "발생일시" in work.columns:
-            work["발생일시"] = pd.to_datetime(work["발생일시"], errors="coerce")
-            work["연도"] = work["발생일시"].dt.year
-            work["월"] = work["발생일시"].dt.month
-
-    if mode == "연도별":
-        if "연도" not in work.columns:
-            return pd.Series(dtype="int64")
-        return work.dropna(subset=["연도"]).groupby("연도").size().sort_index()
-
-    if "월" not in work.columns:
-        return pd.Series(dtype="int64")
-    return work.dropna(subset=["월"]).groupby("월").size().sort_index()
-
-
 def _ensure_year_month(df: pd.DataFrame) -> pd.DataFrame:
     """연도/월 컬럼이 없으면 발생일시로 생성."""
     if df.empty:
@@ -1651,6 +1598,7 @@ def load_weather_passenger_monthly() -> pd.DataFrame:
 # Vega-Lite Spec Functions
 # -----------------------------
 
+
 def _vega_base_config():
     """Vega-Lite 차트 공통 스타일 설정."""
     return {
@@ -1701,7 +1649,11 @@ def _vega_weather_passenger_spec(x_field: str, title: str, height: int):
                 "transform": [{"calculate": "'월 강수량 합 (mm)'", "as": "시리즈"}],
                 "mark": {"type": "bar", "color": "#B9CFE3", "opacity": 0.45},
                 "encoding": {
-                    "x": {"field": x_field, "type": "ordinal", "axis": {"labelAngle": 0}},
+                    "x": {
+                        "field": x_field,
+                        "type": "ordinal",
+                        "axis": {"labelAngle": 0},
+                    },
                     "y": {
                         "field": "강수량",
                         "type": "quantitative",
@@ -1853,61 +1805,6 @@ def _vega_bar_color_spec(
     }
 
 
-def _compute_season_map(monthly_df: pd.DataFrame, value_col: str):
-    """월별 성수기/비수기 구분 맵 생성."""
-    if monthly_df.empty or value_col not in monthly_df.columns:
-        return {}, None
-
-    work = monthly_df[["연", "월", value_col]].dropna()
-    if work.empty:
-        return {}, None
-
-    month_counts = work.groupby("연")["월"].nunique()
-    complete_years = month_counts[month_counts == 12].index.tolist()
-    base_years = complete_years if complete_years else work["연"].unique().tolist()
-
-    base_avg = (
-        work[work["연"].isin(base_years)]
-        .groupby("월")[value_col]
-        .mean()
-        .rename("Base_Avg")
-        .reset_index()
-    )
-
-    start = int(work["연"].min())
-    end = int(work["연"].max())
-    year_month_index = pd.date_range(
-        start=f"{start}-01-01",
-        end=f"{end}-12-01",
-        freq="MS",
-    )
-    full = pd.DataFrame({"YearMonth": year_month_index})
-    full["연"] = full["YearMonth"].dt.year
-    full["월"] = full["YearMonth"].dt.month
-
-    full = full.merge(work, on=["연", "월"], how="left")
-    full = full.merge(base_avg, on="월", how="left")
-    full[value_col] = full[value_col].fillna(full["Base_Avg"])
-
-    monthly_avg = full.groupby("월")[value_col].mean()
-    threshold = monthly_avg.mean()
-
-    season_map = {
-        int(m): ("성수기" if v > threshold else "비수기")
-        for m, v in monthly_avg.items()
-    }
-    return season_map, threshold
-
-
-@st.cache_data(show_spinner=False)
-def load_sms_classified() -> pd.DataFrame:
-    """해상공지 분류 결과 CSV 로드."""
-    path = Path(__file__).parent / "sms_msg_classified.csv"
-    if not path.exists():
-        return pd.DataFrame()
-    return pd.read_csv(path, encoding="utf-8")
-
-
 @st.cache_data(show_spinner=False)
 def load_sms_raw() -> pd.DataFrame:
     """원본 울릉알리미 SMS CSV 로드."""
@@ -1981,7 +1878,9 @@ def load_passenger_daily(kind: str) -> pd.DataFrame:
         vdf.columns = [str(c).strip() for c in vdf.columns]
         if "출항일" in vdf.columns:
             vs = vdf["출항일"].astype(str).str.strip()
-            vs = vs.str.replace(".", "-", regex=False).str.replace("/", "-", regex=False)
+            vs = vs.str.replace(".", "-", regex=False).str.replace(
+                "/", "-", regex=False
+            )
             vdf["date"] = pd.to_datetime(vs, errors="coerce").dt.normalize()
             vdf = vdf.dropna(subset=["date"]).copy()
             if "건수" in vdf.columns:
@@ -1994,9 +1893,9 @@ def load_passenger_daily(kind: str) -> pd.DataFrame:
                     .astype(int)
                 )
                 df = df.merge(vdf[["date", "vehicles"]], on="date", how="left")
-                df["vehicles"] = pd.to_numeric(
-                    df["vehicles"], errors="coerce"
-                ).fillna(0).astype(int)
+                df["vehicles"] = (
+                    pd.to_numeric(df["vehicles"], errors="coerce").fillna(0).astype(int)
+                )
             else:
                 df["vehicles"] = None
         else:
@@ -2134,7 +2033,14 @@ def _latest_sea_event(df: pd.DataFrame, year: int, kind: str) -> dict:
         "엘도라도EX호",
         "울릉썬플라워크루즈호",
     ]
-    arrive_keywords = ["입항", "입항 예정", "입항 예정시간", "입항입니다", "도착", "도착시간"]
+    arrive_keywords = [
+        "입항",
+        "입항 예정",
+        "입항 예정시간",
+        "입항입니다",
+        "도착",
+        "도착시간",
+    ]
     depart_keywords = [
         "출항",
         "출발",
@@ -2173,10 +2079,7 @@ def _latest_sea_event(df: pd.DataFrame, year: int, kind: str) -> dict:
     candidates.sort(key=lambda x: x[0], reverse=True)
     dt, msg = candidates[0]
     names = (
-        ship_keywords
-        + ship_vessel_keywords
-        + people_keywords
-        + people_vessel_keywords
+        ship_keywords + ship_vessel_keywords + people_keywords + people_vessel_keywords
     )
     names = sorted(names, key=len, reverse=True)
     name = next((n for n in names if n in msg), "선박 정보 없음")
@@ -2259,7 +2162,14 @@ def _summarize_sms_notice_counts_window(
     cancel_keywords = ["결항", "취소", "출항 취소", "운항 취소"]
     control_keywords = ["운항 통제", "운항통제", "운항이 통제", "통제되었습니다"]
     change_keywords = ["시간 변경", "시간변경", "시간 변경된", "시간변경된"]
-    arrive_keywords = ["입항", "입항 예정", "입항 예정시간", "입항입니다", "도착", "도착시간"]
+    arrive_keywords = [
+        "입항",
+        "입항 예정",
+        "입항 예정시간",
+        "입항입니다",
+        "도착",
+        "도착시간",
+    ]
     depart_keywords = [
         "출항",
         "출발",
@@ -2401,7 +2311,14 @@ def _summarize_sms_notice_counts(
     cancel_keywords = ["결항", "취소", "출항 취소", "운항 취소"]
     control_keywords = ["운항 통제", "운항통제", "운항이 통제", "통제되었습니다"]
     change_keywords = ["시간 변경", "시간변경", "시간 변경된", "시간변경된"]
-    arrive_keywords = ["입항", "입항 예정", "입항 예정시간", "입항입니다", "도착", "도착시간"]
+    arrive_keywords = [
+        "입항",
+        "입항 예정",
+        "입항 예정시간",
+        "입항입니다",
+        "도착",
+        "도착시간",
+    ]
     depart_keywords = [
         "출항",
         "출발",
@@ -2434,12 +2351,16 @@ def _summarize_sms_notice_counts(
         for p in arrive_route_patterns:
             m = re.search(p, msg)
             if m:
-                arrive_pos = m.start() if arrive_pos is None else min(arrive_pos, m.start())
+                arrive_pos = (
+                    m.start() if arrive_pos is None else min(arrive_pos, m.start())
+                )
         depart_pos = None
         for p in depart_route_patterns:
             m = re.search(p, msg)
             if m:
-                depart_pos = m.start() if depart_pos is None else min(depart_pos, m.start())
+                depart_pos = (
+                    m.start() if depart_pos is None else min(depart_pos, m.start())
+                )
         if arrive_pos is not None and depart_pos is not None:
             return "출항" if depart_pos < arrive_pos else "입항"
         if depart_pos is not None:
@@ -2552,7 +2473,14 @@ def _latest_sea_notice(df: pd.DataFrame, year: int = 2025) -> tuple[str, str]:
     cancel_keywords = ["결항", "취소", "출항 취소", "운항 취소"]
     control_keywords = ["운항 통제", "운항통제", "운항이 통제", "통제되었습니다"]
     change_keywords = ["시간 변경", "시간변경", "시간 변경된", "시간변경된"]
-    arrive_keywords = ["입항", "입항 예정", "입항 예정시간", "입항입니다", "도착", "도착시간"]
+    arrive_keywords = [
+        "입항",
+        "입항 예정",
+        "입항 예정시간",
+        "입항입니다",
+        "도착",
+        "도착시간",
+    ]
     depart_keywords = [
         "출항",
         "출발",
@@ -2585,12 +2513,16 @@ def _latest_sea_notice(df: pd.DataFrame, year: int = 2025) -> tuple[str, str]:
         for p in arrive_route_patterns:
             m = re.search(p, msg)
             if m:
-                arrive_pos = m.start() if arrive_pos is None else min(arrive_pos, m.start())
+                arrive_pos = (
+                    m.start() if arrive_pos is None else min(arrive_pos, m.start())
+                )
         depart_pos = None
         for p in depart_route_patterns:
             m = re.search(p, msg)
             if m:
-                depart_pos = m.start() if depart_pos is None else min(depart_pos, m.start())
+                depart_pos = (
+                    m.start() if depart_pos is None else min(depart_pos, m.start())
+                )
         if arrive_pos is not None and depart_pos is not None:
             return "출항" if depart_pos < arrive_pos else "입항"
         if depart_pos is not None:
@@ -2693,8 +2625,6 @@ def _norm_text(s: str) -> str:
     return re.sub(r"[^0-9a-z가-힣]+", "", s)
 
 
-
-
 def _row_to_address(df: pd.DataFrame, row: pd.Series) -> str:
     """CSV 한 행에서 '주소'로 볼만한 텍스트를 뽑음."""
     for c in ["clean_normalized", "address", "주소", "detail", "raw"]:
@@ -2749,34 +2679,6 @@ def _find_accident_photo_fast(address: str) -> str | None:
     # fallback to slower fuzzy match
     p = find_accident_photo_by_address(address)
     return str(p) if p else None
-
-
-def _format_accident_datetime(df: pd.DataFrame, row: pd.Series) -> str:
-    candidates = [
-        "발생일시",
-        "발생일자",
-        "사고일시",
-        "일시",
-        "date",
-        "datetime",
-        "발생일",
-    ]
-    for c in candidates:
-        if c not in df.columns:
-            continue
-        v = row.get(c, None)
-        if v is None:
-            continue
-        s = str(v).strip()
-        if not s or s.lower() in ["nan", "none"]:
-            continue
-        dt = pd.to_datetime(s, errors="coerce")
-        if pd.isna(dt):
-            continue
-        if dt.hour == 0 and dt.minute == 0:
-            return dt.strftime("%Y-%m-%d")
-        return dt.strftime("%Y-%m-%d %H:%M")
-    return "미상"
 
 
 @st.cache_data(show_spinner=False)
@@ -2971,12 +2873,18 @@ pax_avgs = load_passenger_daily_avg(2025)
 recent_stats = _recent_passenger_stats()
 latest_arrive_sms = _latest_sea_event(sns_raw, 2025, "입항")
 latest_depart_sms = _latest_sea_event(sns_raw, 2025, "출항")
-sms_dates = pd.to_datetime(
-    sns_raw["sms_resDate"].astype(str).str.strip()
-    .str.replace(".", "-", regex=False)
-    .str.replace("/", "-", regex=False),
-    errors="coerce",
-) if not sns_raw.empty and "sms_resDate" in sns_raw.columns else pd.Series(dtype="datetime64[ns]")
+sms_dates = (
+    pd.to_datetime(
+        sns_raw["sms_resDate"]
+        .astype(str)
+        .str.strip()
+        .str.replace(".", "-", regex=False)
+        .str.replace("/", "-", regex=False),
+        errors="coerce",
+    )
+    if not sns_raw.empty and "sms_resDate" in sns_raw.columns
+    else pd.Series(dtype="datetime64[ns]")
+)
 sms_end_dt = sms_dates.dropna().max() if not sms_dates.empty else None
 pax_dates = pd.concat(
     [
@@ -3000,7 +2908,7 @@ monthly_cancel = monthly_counts["결항"]
 monthly_change = monthly_counts["시간변경"]
 
 
-# [수정] 백분율 계산 로직 개선
+# 백분율 계산 로직
 def _pct(count: int, total: int) -> int:
     if total <= 0:
         return 0
@@ -3013,6 +2921,7 @@ def _bar_pct(count: int, total: int, min_pct: int = 6) -> int:
     pct = int(round(count / total * 100))
     return max(pct, min_pct)
 
+
 # 1. 각 항목의 건수/합계 가져오기
 sea_arrive_ship_total = sms_breakdown["입항"]["선박"]
 sea_depart_ship_total = sms_breakdown["출항"]["선박"]
@@ -3024,7 +2933,7 @@ sea_control = sms_counts["운항통제"]
 sea_cancel = sms_counts["결항"]
 sea_change = sms_counts["시간변경"]
 
-# [수정] 막대 그래프의 '시각적 스케일'을 위해 전체 합(Total)이 아닌 최댓값(Max)을 기준으로 100%를 잡음
+# 막대 그래프는 최댓값 기준으로 100% 스케일링
 sea_max_val = max(
     sea_arrive,
     sea_depart,
@@ -3149,9 +3058,7 @@ with c1:
                     )
                     badge_html = f"<div class='sea-badges'>{badge_items}</div>"
                 else:
-                    badge_html = (
-                        "<div class='sea-badges'><span class='sea-badge'>이번 달 이슈 없음</span></div>"
-                    )
+                    badge_html = "<div class='sea-badges'><span class='sea-badge'>이번 달 이슈 없음</span></div>"
 
                 month_html = f"""
 <div class="sea-section">
@@ -3425,7 +3332,9 @@ with st.container(border=True):
 
     def _render_photo_detail_panel(key_suffix: str):
         with st.container(border=True):
-            st.markdown('<div class="card-title">사고 장소 사진</div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div class="card-title">사고 장소 사진</div>', unsafe_allow_html=True
+            )
 
             sel_rock_photo = st.session_state.get("selected_rockfall_photo_path")
             sel_acc_photo = st.session_state.get("selected_acc_photo_path")
@@ -3482,7 +3391,9 @@ with st.container(border=True):
                     _show_photo_dialog(selected_photo_path)
 
             st.write("")
-            st.markdown('<div class="card-title">자세히 보기</div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div class="card-title">자세히 보기</div>', unsafe_allow_html=True
+            )
             if sel_rock_meta:
                 st.markdown(str(sel_rock_meta).replace("\n", "  \n"))
             elif sel_bus_meta:
@@ -3505,7 +3416,12 @@ with st.container(border=True):
             if isinstance(bus_map_state, dict):
                 last = bus_map_state.get("last_object_clicked")
                 bus_meta = st.session_state.get("bus_stops_meta", [])
-                if isinstance(last, dict) and "lat" in last and "lng" in last and bus_meta:
+                if (
+                    isinstance(last, dict)
+                    and "lat" in last
+                    and "lng" in last
+                    and bus_meta
+                ):
                     lat0 = float(last["lat"])
                     lon0 = float(last["lng"])
                     best = None
@@ -3551,7 +3467,10 @@ with st.container(border=True):
                 return f"상행 -> {up}, 하행 -> {down}"
 
             with st.container(border=True):
-                st.markdown('<div class="card-title">버스 실시간 정보</div>', unsafe_allow_html=True)
+                st.markdown(
+                    '<div class="card-title">버스 실시간 정보</div>',
+                    unsafe_allow_html=True,
+                )
                 st.markdown(
                     f"""
 <div style="padding:10px 12px; border:1px solid #e8ebf2; border-radius:12px; margin-bottom:10px; background:#f8f9fc;">
@@ -3565,7 +3484,9 @@ with st.container(border=True):
                     """,
                     unsafe_allow_html=True,
                 )
-                st.markdown('<div class="card-title">정류장 상세</div>', unsafe_allow_html=True)
+                st.markdown(
+                    '<div class="card-title">정류장 상세</div>', unsafe_allow_html=True
+                )
                 sel_bus_meta = st.session_state.get("selected_bus_meta")
                 if sel_bus_meta:
                     route_defs = {r["id"]: r for r in _bus_route_defs()}
@@ -3581,7 +3502,9 @@ with st.container(border=True):
                             if "경유 노선" in line:
                                 raw = line.split(":", 1)[-1].strip()
                                 if "없음" not in raw:
-                                    routes = [r.strip() for r in raw.split(",") if r.strip()]
+                                    routes = [
+                                        r.strip() for r in raw.split(",") if r.strip()
+                                    ]
 
                     st.markdown(
                         f"""
@@ -3595,10 +3518,20 @@ with st.container(border=True):
                     if routes:
                         cards_html = []
                         for route_name in routes:
-                            match = re.match(r"^(\d+)\s*노선\s*(?:\((.*)\))?$", route_name)
+                            match = re.match(
+                                r"^(\d+)\s*노선\s*(?:\((.*)\))?$", route_name
+                            )
                             route_id = match.group(1) if match else ""
-                            route_desc = match.group(2).strip() if match and match.group(2) else ""
-                            if not route_desc and route_id and route_name != f"{route_id}노선":
+                            route_desc = (
+                                match.group(2).strip()
+                                if match and match.group(2)
+                                else ""
+                            )
+                            if (
+                                not route_desc
+                                and route_id
+                                and route_name != f"{route_id}노선"
+                            ):
                                 route_desc = route_name
                             color = (
                                 route_defs.get(route_id, {}).get("color", "#9aa3b2")
@@ -3632,7 +3565,9 @@ with st.container(border=True):
             top_left, top_right = st.columns([4, 1])
             with top_left:
                 if st.session_state["view_mode"] == "list":
-                    st.caption("발생한 사고 목록입니다. 위치 확인 버튼을 누르면 지도로 이동합니다.")
+                    st.caption(
+                        "발생한 사고 목록입니다. 위치 확인 버튼을 누르면 지도로 이동합니다."
+                    )
                 else:
                     st.caption("울릉군 교통사고 지점")
             with top_right:
@@ -3663,7 +3598,9 @@ with st.container(border=True):
                     with st.container(border=True):
                         df_list_view = df_acc_list.copy()
                         if "year" in df_list_view.columns:
-                            df_list_view["_year_sort"] = df_list_view["year"].fillna(0).astype(int)
+                            df_list_view["_year_sort"] = (
+                                df_list_view["year"].fillna(0).astype(int)
+                            )
                             df_list_view = df_list_view.sort_values(
                                 by="_year_sort", ascending=False
                             )
@@ -3694,8 +3631,12 @@ with st.container(border=True):
                                 if pd.notna(lat) and pd.notna(lon)
                                 else "미상"
                             )
-                            photo_path = _find_accident_photo_fast(addr) if addr else None
-                            is_selected = st.session_state.get("selected_acc_idx") == idx
+                            photo_path = (
+                                _find_accident_photo_fast(addr) if addr else None
+                            )
+                            is_selected = (
+                                st.session_state.get("selected_acc_idx") == idx
+                            )
 
                             with st.container(border=True):
                                 c_img, c_info, c_btn = st.columns([1.2, 3, 1])
@@ -3722,9 +3663,18 @@ with st.container(border=True):
                                             unsafe_allow_html=True,
                                         )
                                 with c_info:
-                                    sel_tag = " <span style='color:#d12c2c;'>● 선택</span>" if is_selected else ""
-                                    st.markdown(f"**{display_title}**{sel_tag}", unsafe_allow_html=True)
-                                    st.caption(f"발생연도: {year_val} | 유형: {acc_type}")
+                                    sel_tag = (
+                                        " <span style='color:#d12c2c;'>● 선택</span>"
+                                        if is_selected
+                                        else ""
+                                    )
+                                    st.markdown(
+                                        f"**{display_title}**{sel_tag}",
+                                        unsafe_allow_html=True,
+                                    )
+                                    st.caption(
+                                        f"발생연도: {year_val} | 유형: {acc_type}"
+                                    )
                                     st.markdown(
                                         f"<div style='color:#666; font-size:0.85rem;'>위치: {addr if addr else '미상'}<br/>좌표: {lat_lon}</div>",
                                         unsafe_allow_html=True,
@@ -3742,21 +3692,25 @@ with st.container(border=True):
                                         st.rerun()
                 else:
                     df_acc = df_acc_list
-                    # ---- [최적화] selectbox 변경마다 지도 rerun 방지: form + 적용 버튼 ----  # OPTIMIZED
-                    year_filter = None  # OPTIMIZED
-                    df_view = df_acc  # OPTIMIZED
+                    # selectbox 변경마다 지도 rerun 방지: form + 적용 버튼
+                    year_filter = None
+                    df_view = df_acc
 
                     if "year" in df_acc.columns and not df_acc["year"].dropna().empty:
-                        years = sorted({int(y) for y in df_acc["year"].dropna().unique()})
+                        years = sorted(
+                            {int(y) for y in df_acc["year"].dropna().unique()}
+                        )
                         options = ["전체"] + [str(y) for y in years]
 
-                        if "acc_year_label" not in st.session_state:  # OPTIMIZED
+                        if "acc_year_label" not in st.session_state:
                             st.session_state["acc_year_label"] = (
                                 "전체" if 2025 not in years else "2025"
-                            )  # OPTIMIZED
+                            )
 
-                        with st.form("acc_year_form", clear_on_submit=False):  # OPTIMIZED
-                            default_label = st.session_state["acc_year_label"]  # OPTIMIZED
+                        with st.form(
+                            "acc_year_form", clear_on_submit=False
+                        ):
+                            default_label = st.session_state["acc_year_label"]
                             if default_label not in options:
                                 default_label = options[0]
                             default_idx = options.index(default_label)
@@ -3766,17 +3720,17 @@ with st.container(border=True):
                                 options,
                                 index=default_idx,
                             )
-                            apply_year = st.form_submit_button("적용")  # OPTIMIZED
+                            apply_year = st.form_submit_button("적용")
 
                         if apply_year:
-                            st.session_state["acc_year_label"] = selected_year_label  # OPTIMIZED
+                            st.session_state["acc_year_label"] = selected_year_label
 
-                        selected_year_label = st.session_state["acc_year_label"]  # OPTIMIZED
+                        selected_year_label = st.session_state["acc_year_label"]
                         if selected_year_label != "전체":
-                            year_filter = int(selected_year_label)  # OPTIMIZED
+                            year_filter = int(selected_year_label)
 
                     if year_filter is not None:
-                        df_view = _filter_accidents_by_year(  # OPTIMIZED
+                        df_view = _filter_accidents_by_year(
                             df_acc,
                             year_filter,
                         )
@@ -3827,7 +3781,9 @@ with st.container(border=True):
             top_left, top_right = st.columns([4, 1])
             with top_left:
                 if st.session_state["rock_view_mode"] == "list":
-                    st.caption("낙석 발생 목록입니다. 위치 확인 버튼을 누르면 지도로 이동합니다.")
+                    st.caption(
+                        "낙석 발생 목록입니다. 위치 확인 버튼을 누르면 지도로 이동합니다."
+                    )
                 else:
                     st.caption("울릉군 낙석 발생 지점")
             with top_right:
@@ -3889,7 +3845,9 @@ with st.container(border=True):
                                 if pd.notna(lat) and pd.notna(lon)
                                 else "미상"
                             )
-                            is_selected = st.session_state.get("selected_rock_idx") == item_idx
+                            is_selected = (
+                                st.session_state.get("selected_rock_idx") == item_idx
+                            )
                             date_val = item.get("date", None)
                             damage_val = item.get("damage", None)
                             date_label = (
@@ -3933,7 +3891,9 @@ with st.container(border=True):
                                         if is_selected
                                         else ""
                                     )
-                                    st.markdown(f"**{name}**{sel_tag}", unsafe_allow_html=True)
+                                    st.markdown(
+                                        f"**{name}**{sel_tag}", unsafe_allow_html=True
+                                    )
                                     st.caption(
                                         f"발견일: {date_label} | 피해여부: {damage_label}"
                                     )
@@ -3949,15 +3909,17 @@ with st.container(border=True):
                                         use_container_width=True,
                                     ):
                                         st.session_state["selected_acc_meta"] = None
-                                        st.session_state["selected_acc_photo_path"] = None
+                                        st.session_state["selected_acc_photo_path"] = (
+                                            None
+                                        )
                                         st.session_state["selected_bus_meta"] = None
                                         st.session_state["selected_rock_idx"] = item_idx
-                                        st.session_state["selected_rockfall_meta"] = _rockfall_meta_text(
-                                            item
+                                        st.session_state["selected_rockfall_meta"] = (
+                                            _rockfall_meta_text(item)
                                         )
-                                        st.session_state["selected_rockfall_photo_path"] = (
-                                            str(photo) if photo else None
-                                        )
+                                        st.session_state[
+                                            "selected_rockfall_photo_path"
+                                        ] = (str(photo) if photo else None)
                                         st.session_state["rock_view_mode"] = "map"
                                         st.rerun()
             else:
@@ -3987,7 +3949,9 @@ with st.container(border=True):
                         best = None
                         best_d = None
                         for p in rock_meta:
-                            d = abs(float(p["lat"]) - lat0) + abs(float(p["lon"]) - lon0)
+                            d = abs(float(p["lat"]) - lat0) + abs(
+                                float(p["lon"]) - lon0
+                            )
                             if best_d is None or d < best_d:
                                 best_d = d
                                 best = p
@@ -4000,8 +3964,8 @@ with st.container(border=True):
                             photo = best.get("photo", None)
                             best_idx = int(best.get("idx", 0))
                             st.session_state["selected_rock_idx"] = best_idx
-                            st.session_state["selected_rockfall_meta"] = _rockfall_meta_text(
-                                best
+                            st.session_state["selected_rockfall_meta"] = (
+                                _rockfall_meta_text(best)
                             )
                             st.session_state["selected_rockfall_photo_path"] = (
                                 str(photo) if photo else None
@@ -4254,7 +4218,11 @@ if show_graphs:
                         "layer": [
                             spec,
                             {
-                                "data": {"values": [{"label": "연평균", "value": float(threshold)}]},
+                                "data": {
+                                    "values": [
+                                        {"label": "연평균", "value": float(threshold)}
+                                    ]
+                                },
                                 "mark": {
                                     "type": "rule",
                                     "color": "#000000",
