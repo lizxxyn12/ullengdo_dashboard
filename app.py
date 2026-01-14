@@ -173,6 +173,7 @@ st.markdown(
 div[data-baseweb="select"] { position: relative; z-index: 3000; }
 div[data-baseweb="popover"] { z-index: 4000; }
 section.main iframe { position: relative; z-index: 1; }
+div[data-testid="stIFrame"] iframe { min-height: 360px; }
 
 /* 다이얼로그 스타일 */
 div[data-testid="stDialog"] > div { width: min(96vw, 1400px); margin: 0 auto; }
