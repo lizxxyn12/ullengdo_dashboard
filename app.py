@@ -3377,9 +3377,17 @@ with st.container(border=True):
                                         st.session_state["rock_view_mode"] = "map"
                                         st.rerun()
             else:
+                highlight_idx = st.session_state.get("selected_rock_idx")
+                center_override = None
+                for p in st.session_state.get("rockfall_points_meta", []):
+                    if int(p.get("idx", -1)) == int(highlight_idx or -1):
+                        center_override = (float(p["lat"]), float(p["lon"]))
+                        break
                 rock_map_state = render_ulleung_folium_map(
                     kind="rockfall",
                     height=MAP_H,
+                    highlight_idx=highlight_idx,
+                    center_override=center_override,
                 )
                 if isinstance(rock_map_state, dict):
                     last = rock_map_state.get("last_object_clicked")
