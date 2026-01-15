@@ -1811,7 +1811,13 @@ def load_sms_raw() -> pd.DataFrame:
     path = Path(__file__).parent / "울릉알리미_텍스트.csv"
     if not path.exists():
         return pd.DataFrame()
-    return pd.read_csv(path, encoding="utf-8")
+    df = pd.read_csv(path, encoding="utf-8")
+    if "sms_resDate" in df.columns:
+        s = df["sms_resDate"].astype(str).str.strip()
+        s = s.str.replace(".", "-", regex=False).str.replace("/", "-", regex=False)
+        df["sms_resDate"] = pd.to_datetime(s, errors="coerce")
+        df = df[df["sms_resDate"].dt.year == 2025]
+    return df
 
 
 @st.cache_data(show_spinner=False)
